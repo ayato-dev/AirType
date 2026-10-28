@@ -1,0 +1,84 @@
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+  --radius-window: 18px;
+  --radius-card: 16px;
+  --radius-field: 10px;
+
+  --sky: #8fd0ff;
+  --lilac: #b5a6ff;
+  --rose: #ffb3dc;
+  --accent: #7a68f5;
+  --accent-gradient: linear-gradient(135deg, #7cc4ff 0%, #9b8cff 52%, #ff9fd0 100%);
+  --button-gradient: linear-gradient(135deg, #4f9df5 0%, #7563f0 55%, #d965a8 100%);
+  --accent-soft: rgba(122, 104, 245, 0.12);
+  --focus-ring: rgba(122, 104, 245, 0.2);
+
+  --success: #22a06b;
+  --warning: #e8a317;
+  --danger: #e5484d;
+
+  --text: #1b2030;
+  --muted: rgba(27, 32, 48, 0.58);
+  --faint: rgba(27, 32, 48, 0.38);
+
+  --window-tint: rgba(246, 247, 253, 0.62);
+  --window-rim: rgba(255, 255, 255, 0.55);
+  --surface: rgba(255, 255, 255, 0.5);
+  --surface-strong: rgba(255, 255, 255, 0.82);
+  --surface-solid: rgba(252, 252, 255, 0.94);
+  --border: rgba(255, 255, 255, 0.75);
+  --border-strong: rgba(27, 32, 48, 0.16);
+  --divider: rgba(27, 32, 48, 0.07);
+  --track: rgba(27, 32, 48, 0.07);
+  --field: rgba(255, 255, 255, 0.6);
+  --field-focus: rgba(255, 255, 255, 0.92);
+  --field-border: rgba(27, 32, 48, 0.09);
+
+  --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --card-shadow: 0 10px 30px -18px rgba(70, 55, 160, 0.35);
+  --orb-opacity: 0.45;
+  --grain-opacity: 0.05;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sky: #2f6fb8;
+    --lilac: #5a48c9;
+    --rose: #a8457f;
+    --accent: #a497ff;
+    --accent-soft: rgba(164, 151, 255, 0.16);
+    --focus-ring: rgba(164, 151, 255, 0.26);
+
+    --success: #3dd68c;
+    --warning: #f5c24c;
+    --danger: #ff6b6f;
+
+    --text: #eef0f8;
+    --muted: rgba(238, 240, 248, 0.6);
+    --faint: rgba(238, 240, 248, 0.38);
+
+    --window-tint: rgba(22, 24, 34, 0.6);
+    --window-rim: rgba(255, 255, 255, 0.1);
+    --surface: rgba(255, 255, 255, 0.06);
+    --surface-strong: rgba(255, 255, 255, 0.13);
+    --surface-solid: rgba(36, 38, 50, 0.95);
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --divider: rgba(255, 255, 255, 0.07);
+    --track: rgba(255, 255, 255, 0.08);
+    --field: rgba(0, 0, 0, 0.18);
+    --field-focus: rgba(0, 0, 0, 0.28);
+    --field-border: rgba(255, 255, 255, 0.08);
+
+    --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --card-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.6);
+    --orb-opacity: 0.35;
+    --grain-opacity: 0.06;
+
+    color-scheme: dark;
+  }
+}

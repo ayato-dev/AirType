@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Airtype HUD</title>
+    <link rel="stylesheet" href="/src/styles/hud.css" />
+  </head>
+  <body>
+    <div class="pill" id="pill" data-state="working">
+      <span class="pill-icon" aria-hidden="true">
+        <span class="spinner"></span>
+        <svg class="check" viewBox="0 0 20 20"><path d="M5 10.5l3.2 3.2L15 7" /></svg>
+        <svg class="warn" viewBox="0 0 20 20"><path d="M10 5.5v5.5M10 14.2v.3" /></svg>
+      </span>
+      <span class="pill-text" id="text"></span>
+    </div>
+    <script type="module" src="/src/hud.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Airtype</title>
+    <link rel="stylesheet" href="/src/styles/settings.css" />
+  </head>
+  <body>
+    <div class="app">
+      <div class="ambient" aria-hidden="true">
+        <span class="orb orb-a"></span>
+        <span class="orb orb-b"></span>
+        <span class="orb orb-c"></span>
+      </div>
+
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="logo" aria-hidden="true">
+            <svg viewBox="0 0 44 44"><path d="M18 5C19 14 22 17 31 18 22 19 19 22 18 31 17 22 14 19 5 18 14 17 17 14 18 5Z"/><path d="M32 25c.5 4.5 2 6 6.5 6.5-4.5.5-6 2-6.5 6.5-.5-4.5-2-6-6.5-6.5 4.5-.5 6-2 6.5-6.5Z"/></svg>
+          </span>
+          <span class="brand-name" data-tauri-drag-region>Airtype</span>
+          <button class="status" id="status" type="button" title="Пауза / продолжить">
+            <span class="status-dot"></span><span id="status-text">работает</span>
+          </button>
+        </div>
+        <button class="icon-btn" id="close" type="button" aria-label="Скрыть">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </header>
+
+      <main class="scroll">
+        <section class="hero glass">
+          <p class="hero-title">Выдели текст и нажми</p>
+          <div class="hero-keys" id="hero-keys"></div>
+          <p class="hero-sub">Ничего не выделил? Возьму всё сообщение из поля, где стоит курсор.</p>
+        </section>
+
+        <section class="banner glass" id="ax-banner" hidden>
+          <div>
+            <p class="banner-title">Нужен доступ «Универсальный доступ»</p>
+            <p class="banner-sub">Без него macOS не даст скопировать и вставить текст за тебя.</p>
+          </div>
+          <button class="btn btn-small" id="ax-open" type="button">Открыть</button>
+        </section>
+
+        <h2 class="section-label">Нейронка</h2>
+        <section class="card glass">
+          <div class="segmented" id="provider" role="tablist">
+            <span class="segmented-thumb"></span>
+            <button type="button" role="tab" data-value="anthropic">Claude</button>
+            <button type="button" role="tab" data-value="openai">OpenAI-совместимый</button>
+          </div>
+
+          <label class="stack">
+            <span class="label">API ключ <span class="hint" id="key-state"></span></span>
+            <span class="input-wrap">
+              <input id="api-key" type="password" autocomplete="off" spellcheck="false" />
+              <button class="input-icon" id="key-eye" type="button" aria-label="Показать ключ">
+                <svg viewBox="0 0 20 20"><path d="M1.5 10S4.5 4 10 4s8.5 6 8.5 6-3 6-8.5 6S1.5 10 1.5 10Z"/><circle cx="10" cy="10" r="2.6"/></svg>
+              </button>
+            </span>
+          </label>
+
+          <div class="row">
+            <span class="label">Модель</span>
+            <input id="model" list="models" spellcheck="false" />
+            <datalist id="models"></datalist>
+          </div>
+
+          <div class="row" id="effort-row">
+            <span class="label">Усилие</span>
+            <select id="effort">
+              <option value="low">низкое · быстрее</option>
+              <option value="medium">среднее</option>
+              <option value="high">высокое · дольше</option>
+              <option value="">по умолчанию</option>
+            </select>
+          </div>
+
+          <details class="more">
+            <summary>Свой адрес апи</summary>
+            <input id="base-url" spellcheck="false" />
+            <p class="hint-block" id="base-url-hint"></p>
+          </details>
+
+          <div class="test">
+            <button class="btn primary" id="test" type="button">Проверить</button>
+            <p class="test-result" id="test-result" hidden></p>
+          </div>
+        </section>
+
+        <h2 class="section-label">Перевод</h2>
+        <section class="card glass">
+          <div class="row">
+            <span class="label">Переводить на</span>
+            <input id="target-lang" list="langs" spellcheck="false" />
+          </div>
+          <div class="row">
+            <span class="label">Если текст уже на нём</span>
+            <input id="secondary-lang" list="langs" spellcheck="false" />
+          </div>
+          <datalist id="langs">
+            <option value="English"></option>
+            <option value="Русский"></option>
+            <option value="Українська"></option>
+            <option value="Deutsch"></option>
+            <option value="Español"></option>
+            <option value="Français"></option>
+            <option value="Italiano"></option>
+            <option value="Português"></option>
+            <option value="Polski"></option>
+            <option value="Türkçe"></option>
+            <option value="中文"></option>
+            <option value="日本語"></option>
+            <option value="한국어"></option>
+          </datalist>
+        </section>
+
+        <h2 class="section-label">Действия</h2>
+        <section class="card glass actions">
+          <ul id="actions"></ul>
+          <button class="btn-ghost" id="add-action" type="button">+ своё действие</button>
+        </section>
+
+        <h2 class="section-label">Общее</h2>
+        <section class="card glass">
+          <label class="row switch-row">
+            <span class="label">Показывать индикатор</span>
+            <input type="checkbox" class="switch" id="show-hud" />
+          </label>
+          <label class="row switch-row">
+            <span class="label">Запускать вместе с системой</span>
+            <input type="checkbox" class="switch" id="autostart" />
+          </label>
+        </section>
+
+        <footer class="footer">
+          <span id="saved">Сохраняется само</span>
+          <span>·</span>
+          <span id="version"></span>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/settings.ts"></script>
+  </body>
+</html>
