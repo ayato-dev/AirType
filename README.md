@@ -29,7 +29,7 @@ Airtype работает с твоим собственным ключом (BYOK
 
 Установщики лежат в [релизах](https://github.com/ayato-dev/AirType/releases/latest): `.exe` или `.msi` для Windows, `.dmg` для macOS (универсальный, Intel и Apple Silicon), `.deb` и `.AppImage` для Linux на X11.
 
-Новый релиз делается тегом: подними версию в `package.json`, `src-tauri/Cargo.toml` и `src-tauri/tauri.conf.json`, затем `git tag v0.2.0 && git push origin v0.2.0`. GitHub Actions соберёт установщики на трёх системах и сам опубликует релиз. Сборки с каждого пуша в `main` тоже есть: вкладка **Actions** → запуск **build** → артефакты.
+Новый релиз делается тегом: подними версию в `package.json`, `src-tauri/Cargo.toml` и `src-tauri/tauri.conf.json`, затем `git tag v0.2.0 && git push origin v0.2.0` или на вкладке **Actions** → **build** → **Run workflow** с галочкой «release». GitHub Actions соберёт установщики на трёх системах и сам опубликует релиз. Сборки с каждого пуша в `main` тоже есть: вкладка **Actions** → запуск **build** → артефакты.
 
 **macOS.** Сборка не подписана сертификатом Apple, поэтому после установки выполни один раз:
 
