@@ -66,13 +66,15 @@ struct Runtime {
     sha256: &'static str,
 }
 
-/// The CPU build for this system; on Apple silicon it runs on the GPU through Metal.
+/// The build for this system. On x64 Windows and Linux it is the Vulkan one,
+/// which runs on any NVIDIA, AMD or Intel GPU with its usual driver and falls
+/// back to the CPU without one; Apple silicon has Metal; the rest is CPU only.
 fn runtime() -> Option<Runtime> {
     let (asset, size, sha256) = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => (
-            "llama-b11669-bin-win-cpu-x64.zip",
-            19_537_886,
-            "37b3efcf962847ca869745fd4ccf7f5e7e8dacfeff9fa3523b4ca8cdc66d632b",
+            "llama-b11669-bin-win-vulkan-x64.zip",
+            32_182_350,
+            "2c07574e7bde71321cb785282b20cc821e951132149eeceeea32ddebdbf0598e",
         ),
         ("windows", "aarch64") => (
             "llama-b11669-bin-win-cpu-arm64.zip",
@@ -90,9 +92,9 @@ fn runtime() -> Option<Runtime> {
             "cab28238d78158109b48deb27b05d50e0dcef56275d2e76da9ca8281526c7532",
         ),
         ("linux", "x86_64") => (
-            "llama-b11669-bin-ubuntu-x64.tar.gz",
-            17_851_611,
-            "cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac",
+            "llama-b11669-bin-ubuntu-vulkan-x64.tar.gz",
+            30_497_889,
+            "e8709e5ba6c1b093dea7f3de57f4aba842f9a188fba6b465782d65d6fcfa4d9f",
         ),
         ("linux", "aarch64") => (
             "llama-b11669-bin-ubuntu-arm64.tar.gz",
@@ -120,8 +122,12 @@ fn model_path(app: &AppHandle, model: &Model) -> Result<PathBuf, String> {
     Ok(root(app)?.join("models").join(model.file))
 }
 
+/// One folder per build, named after its archive, so a switch to another
+/// build (CPU to Vulkan) downloads it instead of using the old one.
 fn runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(root(app)?.join(format!("llama-{LLAMA_BUILD}")))
+    let runtime = runtime().ok_or("Для этой системы нет сборки llama.cpp")?;
+    let name = runtime.asset.trim_end_matches(".zip").trim_end_matches(".tar.gz");
+    Ok(root(app)?.join(name))
 }
 
 const SERVER_EXE: &str = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
@@ -142,7 +148,12 @@ fn find_server(dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// The model and the server that runs it are both here.
 pub fn downloaded(app: &AppHandle, model: &Model) -> bool {
+    model_file_ready(app, model) && runtime_ready(app)
+}
+
+fn model_file_ready(app: &AppHandle, model: &Model) -> bool {
     model_path(app, model).is_ok_and(|path| fs::metadata(path).is_ok_and(|m| m.len() == model.size))
 }
 
@@ -228,17 +239,31 @@ fn fetch_all(app: &AppHandle, model: &'static Model, runtime: &Runtime) -> Resul
         );
         let archive = root.join(format!("{}.part", runtime.asset));
         fetch(app, &client, &url, &archive, runtime.size, runtime.sha256, model.id, "server")?;
-        unpack(&archive, &runtime_dir(app)?, runtime.asset)?;
+        let dir = runtime_dir(app)?;
+        unpack(&archive, &dir, runtime.asset)?;
         let _ = fs::remove_file(&archive);
+        remove_old_runtimes(&root, &dir);
     }
 
-    if !downloaded(app, model) {
+    if !model_file_ready(app, model) {
         let path = model_path(app, model)?;
         let part = path.with_extension("gguf.part");
         fetch(app, &client, model.url, &part, model.size, model.sha256, model.id, "model")?;
         fs::rename(&part, &path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Builds from earlier versions of the app take tens of megabytes for nothing.
+fn remove_old_runtimes(root: &Path, keep: &Path) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if path != keep && path.is_dir() && name.to_string_lossy().starts_with("llama-") {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
 }
 
 /// Downloads to `path`, picking up a cut-off download where it stopped, and
@@ -478,34 +503,66 @@ pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
         .ok()
         .and_then(|dir| find_server(&dir))
         .ok_or("Сначала скачай модель в настройках")?;
-    let port = free_port().ok_or("Не нашёл свободный порт для модели")?;
+    let model_file = model_path(app, model)?;
+    let log = root(app).ok().map(|dir| dir.join("server.log"));
 
+    // The GPU first; a driver that can't take the model gets the CPU instead,
+    // and the next starts skip the GPU for the rest of the run.
+    let mut s = None;
+    if GPU.load(Ordering::SeqCst) {
+        match start(&exe, &model_file, log.as_deref(), true) {
+            Ok(started) => s = Some(started),
+            Err(_) => GPU.store(false, Ordering::SeqCst),
+        }
+    }
+    let mut s = match s {
+        Some(s) => s,
+        None => start(&exe, &model_file, log.as_deref(), false)?,
+    };
+    s.model = model.id.into();
+    let port = s.port;
+    s.used = Instant::now();
+    *server = Some(s);
+    watch_idle();
+    Ok(address(port))
+}
+
+/// Whether to offload the model to the GPU. Only builds that have one to
+/// offload to; cleared after the GPU build failed to load the model.
+static GPU: AtomicBool = AtomicBool::new(cfg!(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(any(windows, target_os = "linux"), target_arch = "x86_64"),
+)));
+
+/// Starts the server and waits until the model is loaded.
+fn start(exe: &Path, model_file: &Path, log: Option<&Path>, gpu: bool) -> Result<Server, String> {
+    let port = free_port().ok_or("Не нашёл свободный порт для модели")?;
     // What the server says goes to a log next to the models, for when it won't start.
-    let log = root(app).ok().and_then(|dir| File::create(dir.join("server.log")).ok());
-    let mut command = Command::new(&exe);
+    let log = log.and_then(|path| File::create(path).ok());
+    let mut command = Command::new(exe);
     command
         .current_dir(exe.parent().unwrap_or(Path::new(".")))
         .arg("--model")
-        .arg(model_path(app, model)?)
+        .arg(model_file)
         .args(["--host", "127.0.0.1", "--port", &port.to_string()])
         // One request at a time, with room for a long text and its answer.
         .args(["--ctx-size", "8192", "--parallel", "1", "--jinja", "--no-webui"])
+        // As many layers as fit in video memory (all of them for these
+        // models on most cards), or none.
+        .args(["--n-gpu-layers", if gpu { "auto" } else { "0" }])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log.map_or_else(Stdio::null, Stdio::from));
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        command.args(["--n-gpu-layers", "99"]);
-    }
     platform::prepare(&mut command);
     let child = command.spawn().map_err(|e| format!("Модель не запустилась: {e}"))?;
     platform::adopt(&child);
-    let mut s = Server { child, port, model: model.id.into(), used: Instant::now() };
+    let mut s = Server { child, port, model: String::new(), used: Instant::now() };
 
     // Loading the weights takes a few seconds, longer from a slow disk.
     let start = Instant::now();
     loop {
         if healthy(port) {
-            break;
+            return Ok(s);
         }
         if !matches!(s.child.try_wait(), Ok(None)) {
             return Err(
@@ -514,14 +571,11 @@ pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
         }
         if start.elapsed() > Duration::from_secs(120) {
             let _ = s.child.kill();
+            let _ = s.child.wait();
             return Err("Модель слишком долго загружается".into());
         }
         thread::sleep(Duration::from_millis(250));
     }
-    s.used = Instant::now();
-    *server = Some(s);
-    watch_idle();
-    Ok(address(port))
 }
 
 fn address(port: u16) -> String {
@@ -642,6 +696,22 @@ mod tests {
             assert!(m.url.ends_with(m.file));
         }
         assert_eq!(crate::config::LocalConfig::default().model, MODELS[0].id);
+    }
+
+    #[test]
+    fn old_runtimes_go_but_not_the_rest() {
+        let root = std::env::temp_dir().join(format!("airtype-test-runtimes-{}", std::process::id()));
+        let keep = root.join("llama-b11669-bin-win-vulkan-x64");
+        for dir in [&keep, &root.join("llama-b11669"), &root.join("models")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(root.join("llama-b11669-bin-win-vulkan-x64.zip.part"), b"").unwrap();
+        remove_old_runtimes(&root, &keep);
+        assert!(keep.is_dir());
+        assert!(root.join("models").is_dir());
+        assert!(root.join("llama-b11669-bin-win-vulkan-x64.zip.part").is_file());
+        assert!(!root.join("llama-b11669").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
