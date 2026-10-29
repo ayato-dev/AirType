@@ -10,6 +10,7 @@
     <svg width="0" height="0" aria-hidden="true" style="position: absolute">
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12" /></symbol>
       <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24">
         <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" />
@@ -34,9 +35,14 @@
           </svg>
           <span class="brand-name" data-tauri-drag-region>Airtype</span>
         </div>
-        <button class="win-close" id="close" type="button" aria-label="Скрыть окно">
-          <svg class="icon"><use href="#i-x" /></svg>
-        </button>
+        <div class="win-buttons">
+          <button class="win-button" id="minimize" type="button" aria-label="Свернуть окно">
+            <svg class="icon"><use href="#i-minus" /></svg>
+          </button>
+          <button class="win-button" id="close" type="button" aria-label="Закрыть окно">
+            <svg class="icon"><use href="#i-x" /></svg>
+          </button>
+        </div>
       </header>
 
       <nav class="tabs" role="tablist" aria-label="Разделы" data-tauri-drag-region>
@@ -61,31 +67,19 @@
             <svg class="icon"><use href="#i-plus" /></svg>Добавить своё действие
           </button>
 
+          <h2 class="title">Панель под полем</h2>
+          <ul class="actions" id="panel-row"></ul>
+
           <h2 class="title">Перевод</h2>
           <div class="pair">
             <label class="field">
               <span class="field-label">Переводить на</span>
-              <input class="input" id="target-lang" list="langs" spellcheck="false" />
+              <input class="input" id="target-lang" spellcheck="false" />
             </label>
             <label class="field">
               <span class="field-label">Если текст уже на нём, то на</span>
-              <input class="input" id="secondary-lang" list="langs" spellcheck="false" />
+              <input class="input" id="secondary-lang" spellcheck="false" />
             </label>
-            <datalist id="langs">
-              <option value="English"></option>
-              <option value="Русский"></option>
-              <option value="Українська"></option>
-              <option value="Deutsch"></option>
-              <option value="Español"></option>
-              <option value="Français"></option>
-              <option value="Italiano"></option>
-              <option value="Português"></option>
-              <option value="Polski"></option>
-              <option value="Türkçe"></option>
-              <option value="中文"></option>
-              <option value="日本語"></option>
-              <option value="한국어"></option>
-            </datalist>
           </div>
         </section>
 
@@ -96,14 +90,26 @@
             <label class="pick-option">
               <input type="radio" name="provider" value="anthropic" /><span>Claude</span>
             </label>
-            <span class="pick-word">или</span>
+            <span class="pick-word" id="provider-or">или</span>
             <label class="pick-option">
               <input type="radio" name="provider" value="openai" /><span>OpenAI-совместимая</span>
+            </label>
+            <span class="pick-word" id="local-or" hidden>или</span>
+            <label class="pick-option" id="local-option" hidden>
+              <input type="radio" name="provider" value="local" /><span>модель на компьютере</span>
             </label>
           </fieldset>
           <p class="hint" id="provider-hint"></p>
 
-          <div class="form">
+          <div class="local" id="local" hidden>
+            <ul class="rows" id="local-models"></ul>
+            <p class="hint">
+              Скачивается один раз. Пока модель запущена, она занимает 2–4 ГБ памяти, а через 10 минут без дела
+              выгружается.
+            </p>
+          </div>
+
+          <div class="form" id="form">
             <label class="field">
               <span class="field-label">Ключ API <span class="field-status" id="key-state"></span></span>
               <span class="input-wrap">
@@ -117,21 +123,15 @@
             <div class="pair">
               <label class="field">
                 <span class="field-label">Модель</span>
-                <input class="input" id="model" list="models" spellcheck="false" />
-                <datalist id="models"></datalist>
+                <input class="input" id="model" spellcheck="false" />
               </label>
-              <label class="field" id="effort-field">
-                <span class="field-label">Усилие</span>
+              <div class="field" id="effort-field">
+                <span class="field-label" id="effort-label">Усилие</span>
                 <span class="select-wrap">
-                  <select class="input" id="effort">
-                    <option value="low">Низкое, быстрее</option>
-                    <option value="medium">Среднее</option>
-                    <option value="high">Высокое, дольше</option>
-                    <option value="">Как у модели</option>
-                  </select>
+                  <button class="input select" id="effort" type="button" aria-labelledby="effort-label"></button>
                   <svg class="icon"><use href="#i-chevron" /></svg>
                 </span>
-              </label>
+              </div>
             </div>
             <p class="hint" id="model-hint"></p>
 
@@ -167,7 +167,7 @@
               <label class="row">
                 <input type="checkbox" class="tick" id="show-hud" />
                 <span class="row-text">
-                  <span class="row-title">Ярлычок внизу экрана</span>
+                  <span class="row-title">Ярлычок под полем ввода</span>
                   <span class="row-desc">Видно, что нейронка думает, и если что-то пошло не так</span>
                 </span>
               </label>

@@ -1,6 +1,6 @@
 [package]
 name = "airtype"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lightweight AI translator and editor for any text field"
 edition = "2021"
 rust-version = "1.80"
@@ -24,21 +24,32 @@ arboard = { version = "3", default-features = false }
 # Linux keeps keys in the Secret Service (GNOME Keyring, KWallet) over D-Bus.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 url = "2"
+# Checks the local model and its server against known hashes after download.
+sha2 = "0.10"
+# Unpacks the local model's server (gzip, and deflate inside zip); pure Rust.
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 # Already pulled in by Tauri's WebView2 layer; here only for UI Automation (COM).
-windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Accessibility"] }
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility"] }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_System_DataExchange",
+  "Win32_System_JobObjects",
+  "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# llama.cpp ships its Windows builds as zip.
+zip = { version = "4.2.0", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The local model's server goes down with the app (PR_SET_PDEATHSIG).
+libc = "0.2"
 # Already in the tree through arboard; XTest sends Ctrl+C/V on X11.
 x11rb = { version = "0.13", features = ["xtest"] }
 
@@ -50,11 +61,16 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
   "std",
+  "libc",
   "NSPasteboard",
   "NSPasteboardItem",
   "NSRunningApplication",
   "NSWorkspace",
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+# llama.cpp ships its macOS and Linux builds as tar.gz.
+tar = "0.4"
 
 [profile.release]
 codegen-units = 1

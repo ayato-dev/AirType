@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { combo as comboBox, menuOpen, select, type Choice } from "./dropdown";
 import { squiggleLead } from "./flag";
 import { hotkeyLabel, hotkeyParts, isMac, recordKey } from "./hotkey";
 
-type Provider = "anthropic" | "openai";
+type Provider = "anthropic" | "openai" | "local";
 type View = "actions" | "model" | "general";
 
 interface Action {
@@ -20,16 +21,23 @@ interface ProviderConfig {
   baseUrl: string;
 }
 
+interface PanelConfig {
+  hotkey: string;
+  enabled: boolean;
+}
+
 interface Settings {
   provider: Provider;
   anthropic: ProviderConfig;
   openai: ProviderConfig;
+  local: { model: string };
   effort: string;
   targetLang: string;
   secondaryLang: string;
   showHud: boolean;
   paused: boolean;
   actions: Action[];
+  panel: PanelConfig;
 }
 
 interface HotkeyError {
@@ -39,21 +47,47 @@ interface HotkeyError {
 
 interface UiState {
   settings: Settings;
-  keys: Record<Provider, boolean>;
+  keys: Record<"anthropic" | "openai", boolean>;
   hotkeyErrors: HotkeyError[];
   /** The settings file couldn't be read and was set aside. */
   notice: string | null;
   platform: string;
+  rounded: boolean;
   wayland: boolean;
+  localSupported: boolean;
   accessibility: boolean;
   autostart: boolean;
   version: string;
 }
 
+interface LocalModel {
+  id: string;
+  name: string;
+  note: string;
+  size: number;
+  downloaded: boolean;
+}
+
+interface LocalProgress {
+  model: string;
+  stage: "server" | "model" | "check" | "done" | "error" | "cancelled";
+  done: number;
+  total: number;
+  message: string | null;
+}
+
+interface LocalStatus {
+  models: LocalModel[];
+  download: LocalProgress | null;
+}
+
+type CloudProvider = "anthropic" | "openai";
+
 const BUILTIN = new Set(["translate", "fix", "improve"]);
+const PANEL_ID = "panel";
 const VIEWS: View[] = ["actions", "model", "general"];
 
-const MODELS: Record<Provider, { value: string; label: string }[]> = {
+const MODELS: Record<CloudProvider, { value: string; label: string }[]> = {
   anthropic: [
     { value: "claude-opus-5-5", label: "Самая умная" },
     { value: "claude-sonnet-5-5", label: "Баланс" },
@@ -62,8 +96,34 @@ const MODELS: Record<Provider, { value: string; label: string }[]> = {
   openai: [],
 };
 
+const EFFORTS: Choice[] = [
+  { value: "low", label: "Низкое, быстрее" },
+  { value: "medium", label: "Среднее" },
+  { value: "high", label: "Высокое, дольше" },
+  { value: "", label: "Как у модели" },
+];
+
+const LANGS: Choice[] = [
+  "English",
+  "Русский",
+  "Українська",
+  "Deutsch",
+  "Español",
+  "Français",
+  "Italiano",
+  "Português",
+  "Polski",
+  "Türkçe",
+  "中文",
+  "日本語",
+  "한국어",
+].map((value) => ({ value }));
+
+const LOCAL_HINT =
+  "Qwen3.5 прямо на твоём компьютере: бесплатно, без ключа и без интернета. Отвечает медленнее облака и пишет попроще.";
+
 const PROVIDER_TEXT: Record<
-  Provider,
+  CloudProvider,
   { hint: string; key: string; model: string; modelHint: string; url: string; urlHint: string }
 > = {
   anthropic: {
@@ -120,10 +180,16 @@ const el = {
   keyEye: $<HTMLButtonElement>("key-eye"),
   keyState: $("key-state"),
   model: $<HTMLInputElement>("model"),
-  models: $<HTMLDataListElement>("models"),
   modelHint: $("model-hint"),
   effortField: $("effort-field"),
-  effort: $<HTMLSelectElement>("effort"),
+  form: $("form"),
+  local: $("local"),
+  localModels: $<HTMLUListElement>("local-models"),
+  localOption: $("local-option"),
+  localOr: $("local-or"),
+  providerOr: $("provider-or"),
+  panelRow: $<HTMLUListElement>("panel-row"),
+  effort: $<HTMLButtonElement>("effort"),
   baseUrl: $<HTMLInputElement>("base-url"),
   baseUrlHint: $("base-url-hint"),
   test: $<HTMLButtonElement>("test"),
@@ -144,7 +210,10 @@ let settings: Settings;
 let view: View = "actions";
 let expanded: string | null = null;
 let previewId: string | null = null;
-let recording: { action: Action; chip: HTMLButtonElement } | null = null;
+/** Whose hotkey is being recorded: an action or the panel. */
+let recording: { owner: { hotkey: string }; chip: HTMLButtonElement } | null = null;
+let local: LocalStatus = { models: [], download: null };
+let effortSelect: { render: () => void } | null = null;
 
 function icon(name: string): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -157,7 +226,16 @@ function icon(name: string): SVGSVGElement {
 }
 
 function requiresKey(): boolean {
+  if (settings.provider === "local") return false;
   return settings.provider === "anthropic" || settings.openai.baseUrl.trim() === "";
+}
+
+function hasKey(): boolean {
+  return settings.provider !== "local" && ui.keys[settings.provider];
+}
+
+function localReady(): boolean {
+  return local.models.some((m) => m.id === settings.local.model && m.downloaded);
 }
 
 // ---------- saving ----------
@@ -250,7 +328,7 @@ function currentNotes(): Note[] {
   if (complaint) notes.push(complaint);
   if (ui.notice) notes.push({ text: ui.notice, flag: "не прочитался" });
   // On the model tab the key field is right there, a remark about it would only repeat it.
-  if (requiresKey() && !ui.keys[settings.provider] && view !== "model") {
+  if (requiresKey() && !hasKey() && view !== "model") {
     notes.push({
       text: "Без ключа API нейронка не ответит.",
       flag: "ключа API",
@@ -261,6 +339,13 @@ function currentNotes(): Note[] {
           el.apiKey.focus();
         },
       },
+    });
+  }
+  if (settings.provider === "local" && !localReady() && view !== "model") {
+    notes.push({
+      text: "Модель на компьютере ещё не скачана.",
+      flag: "не скачана",
+      action: { label: "Скачать", run: () => showView("model") },
     });
   }
   if (ui.wayland) {
@@ -381,9 +466,22 @@ function renderPreview(animate = false) {
 
 function renderProvider() {
   const provider = settings.provider;
+  for (const radio of el.providers) radio.checked = radio.value === provider;
+  el.localOption.hidden = el.localOr.hidden = !ui.localSupported && provider !== "local";
+  // Three choices read "Claude, OpenAI-compatible or the one on this computer".
+  el.providerOr.textContent = el.localOption.hidden ? "или" : ",";
+  el.providerOr.classList.toggle("comma", !el.localOption.hidden);
+  el.form.hidden = provider === "local";
+  el.local.hidden = provider !== "local";
+  el.testResult.hidden = true;
+  if (provider === "local") {
+    el.providerHint.textContent = LOCAL_HINT;
+    renderLocal();
+    renderStatus();
+    return;
+  }
   const cfg = settings[provider];
   const text = PROVIDER_TEXT[provider];
-  for (const radio of el.providers) radio.checked = radio.value === provider;
   el.providerHint.textContent = text.hint;
 
   const hasKey = ui.keys[provider];
@@ -393,28 +491,183 @@ function renderProvider() {
 
   el.model.value = cfg.model;
   el.model.placeholder = text.model;
-  el.models.replaceChildren(
-    ...MODELS[provider].map((m) => {
-      const option = document.createElement("option");
-      option.value = m.value;
-      option.label = m.label;
-      return option;
-    }),
-  );
   el.modelHint.textContent = text.modelHint;
 
   el.effortField.hidden = provider !== "anthropic";
-  el.effort.value = settings.effort;
+  effortSelect?.render();
   el.baseUrl.value = cfg.baseUrl;
   el.baseUrl.placeholder = text.url;
   el.baseUrlHint.textContent = text.urlHint;
-  el.testResult.hidden = true;
   renderStatus();
+}
+
+// ---------- the model on this computer ----------
+
+function size(bytes: number): string {
+  return `${(bytes / 1e9).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} ГБ`;
+}
+
+function localRow(model: LocalModel): HTMLLIElement {
+  const li = document.createElement("li");
+  const row = document.createElement("div");
+  row.className = "row local-model";
+  const progress = local.download?.model === model.id ? local.download : null;
+  const chosen = model.downloaded && settings.local.model === model.id;
+  row.toggleAttribute("data-chosen", chosen);
+
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "action-main";
+  main.disabled = !model.downloaded;
+  const title = document.createElement("span");
+  title.className = "row-title";
+  const name = document.createElement("span");
+  name.className = "local-name";
+  name.textContent = model.name;
+  name.dataset.text = model.name;
+  // While it downloads, the highlighter runs through the name as far as it has come.
+  if (progress && progress.total > 0) {
+    name.style.setProperty("--done", `${Math.round((progress.done / progress.total) * 100)}%`);
+    name.classList.add("loading");
+  }
+  title.append(name);
+  const desc = document.createElement("span");
+  desc.className = "row-desc";
+  desc.textContent = `${model.note} · ${size(model.size)}`;
+  main.append(title, desc);
+  main.addEventListener("click", () => {
+    if (!model.downloaded || chosen) return;
+    settings.local.model = model.id;
+    renderLocal();
+    renderNotes();
+    scheduleSave(0);
+  });
+
+  const side = document.createElement("div");
+  side.className = "local-side";
+  const link = (label: string, run: () => void, danger = false) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = danger ? "link-danger" : "link";
+    b.textContent = label;
+    b.addEventListener("click", run);
+    return b;
+  };
+  const say = (text: string) => Object.assign(document.createElement("span"), { className: "hint", textContent: text });
+
+  if (progress) {
+    const pct = progress.total > 0 ? Math.floor((progress.done / progress.total) * 100) : 0;
+    const what =
+      progress.stage === "server" ? `Ставлю движок ${pct}%` : progress.stage === "check" ? "Проверяю файл" : `Качаю ${pct}%`;
+    side.append(say(what), link("Стоп", () => void invoke("local_cancel")));
+  } else if (model.downloaded) {
+    if (chosen) side.append(say("Выбрана"));
+    side.append(
+      link(
+        "Удалить",
+        async () => {
+          try {
+            await invoke("local_delete", { model: model.id });
+            await refreshLocal();
+          } catch (e) {
+            complain("Не удалилось.", e);
+          }
+        },
+        true,
+      ),
+    );
+  } else {
+    side.append(
+      link("Скачать", async () => {
+        try {
+          await invoke("local_download", { model: model.id });
+          await refreshLocal();
+        } catch (e) {
+          complain("Не качается.", e);
+        }
+      }),
+    );
+  }
+
+  row.append(main, side);
+  li.append(row);
+  if (localError?.model === model.id) {
+    const error = document.createElement("p");
+    error.className = "local-error";
+    error.append(...squiggleLead(localError.message));
+    li.append(error);
+  }
+  return li;
+}
+
+let localError: { model: string; message: string } | null = null;
+
+function renderLocal() {
+  el.localModels.replaceChildren(...local.models.map(localRow));
+}
+
+async function refreshLocal() {
+  local = await invoke<LocalStatus>("local_status");
+  if (settings.provider === "local") renderLocal();
+  renderNotes();
 }
 
 function renderActions() {
   el.actions.replaceChildren(...settings.actions.map(actionRow));
+  renderPanelRow();
   renderPreview();
+}
+
+function panelMeta(): { text: string; error: boolean } {
+  const error = ui.hotkeyErrors.find((e) => e.actionId === PANEL_ID);
+  if (error && settings.panel.enabled) return { text: error.message, error: true };
+  if (!settings.panel.enabled) return { text: "Выключено", error: false };
+  return {
+    text: "В пустом поле напишет текст по твоей просьбе. С выделенным текстом, даже на сайте, переведёт, исправит или улучшит и покажет ответ",
+    error: false,
+  };
+}
+
+function renderPanelRow() {
+  const li = document.createElement("li");
+  li.className = "action";
+  li.classList.toggle("off", !settings.panel.enabled);
+  const head = document.createElement("div");
+  head.className = "action-head";
+
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.className = "tick";
+  toggle.checked = settings.panel.enabled;
+  toggle.setAttribute("aria-label", "Включить панель");
+  toggle.addEventListener("change", () => {
+    settings.panel.enabled = toggle.checked;
+    renderPanelRow();
+    scheduleSave(0);
+  });
+
+  const main = document.createElement("div");
+  main.className = "action-main";
+  const title = Object.assign(document.createElement("span"), { className: "row-title", textContent: "Напиши за меня" });
+  const desc = document.createElement("span");
+  desc.className = "row-desc";
+  desc.dataset.meta = PANEL_ID;
+  const meta = panelMeta();
+  desc.textContent = meta.text;
+  desc.classList.toggle("flag", meta.error);
+  main.append(title, desc);
+
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "keys";
+  chip.title = "Нажми и введи новое сочетание";
+  chip.setAttribute("aria-label", "Сочетание для панели");
+  fillChip(chip, settings.panel.hotkey);
+  chip.addEventListener("click", () => startRecording(settings.panel, chip));
+
+  head.append(toggle, main, chip);
+  li.append(head);
+  el.panelRow.replaceChildren(li);
 }
 
 function actionMeta(action: Action): { text: string; error: boolean } {
@@ -434,6 +687,12 @@ function actionMeta(action: Action): { text: string; error: boolean } {
 }
 
 function refreshActionMeta() {
+  const panelDesc = el.panelRow.querySelector<HTMLElement>(`[data-meta="${PANEL_ID}"]`);
+  if (panelDesc) {
+    const meta = panelMeta();
+    panelDesc.textContent = meta.text;
+    panelDesc.classList.toggle("flag", meta.error);
+  }
   for (const action of settings.actions) {
     const desc = el.actions.querySelector<HTMLElement>(`[data-meta="${action.id}"]`);
     if (!desc) continue;
@@ -570,9 +829,9 @@ function fillChip(chip: HTMLButtonElement, accelerator: string, placeholder = "�
 
 // ---------- hotkey recording ----------
 
-function startRecording(action: Action, chip: HTMLButtonElement) {
+function startRecording(owner: { hotkey: string }, chip: HTMLButtonElement) {
   if (recording) stopRecording();
-  recording = { action, chip };
+  recording = { owner, chip };
   chip.classList.add("recording");
   fillChip(chip, "", "Жми сочетание");
   // The current hotkeys would otherwise fire while the user presses them here.
@@ -581,10 +840,10 @@ function startRecording(action: Action, chip: HTMLButtonElement) {
 
 function stopRecording() {
   if (!recording) return;
-  const { action, chip } = recording;
+  const { owner, chip } = recording;
   recording = null;
   chip.classList.remove("recording");
-  fillChip(chip, action.hotkey);
+  fillChip(chip, owner.hotkey);
   void save().then(async () => {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("suspend_hotkeys", { suspended: false });
     refreshActionMeta();
@@ -595,6 +854,8 @@ window.addEventListener(
   "keydown",
   (e) => {
     if (!recording) {
+      // An open list takes Escape for itself.
+      if (menuOpen()) return;
       const hideCombo = (e.metaKey || e.ctrlKey) && e.code === "KeyW";
       const isField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (hideCombo || (e.key === "Escape" && !isField)) {
@@ -606,13 +867,13 @@ window.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     const result = recordKey(e);
-    const { action, chip } = recording;
+    const { owner, chip } = recording;
     switch (result.kind) {
       case "cancel":
         stopRecording();
         break;
       case "clear":
-        action.hotkey = "";
+        owner.hotkey = "";
         stopRecording();
         break;
       case "pending":
@@ -622,7 +883,7 @@ window.addEventListener(
         fillChip(chip, "", isMac ? "Нужен ⌘, ⌃ или ⌥" : "Нужен Ctrl или Alt");
         break;
       case "done":
-        action.hotkey = result.accelerator;
+        owner.hotkey = result.accelerator;
         stopRecording();
         break;
     }
@@ -642,6 +903,7 @@ function setPaused(paused: boolean) {
 
 function bind() {
   $("close").addEventListener("click", () => void invoke("hide_settings"));
+  $("minimize").addEventListener("click", () => void getCurrentWindow().minimize());
   el.views.addEventListener("scroll", updateFade, { passive: true });
   const resized = new ResizeObserver(updateFade);
   resized.observe(el.views);
@@ -677,7 +939,7 @@ function bind() {
 
   const saveKey = async () => {
     const key = el.apiKey.value.trim();
-    if (!key) return;
+    if (!key || settings.provider === "local") return;
     try {
       await invoke("set_api_key", { provider: settings.provider, key });
       ui.keys[settings.provider] = true;
@@ -691,19 +953,34 @@ function bind() {
     if (e.key === "Enter") el.apiKey.blur();
   });
 
+  const cloud = () => (settings.provider === "local" ? null : settings[settings.provider]);
   el.model.addEventListener("input", () => {
-    settings[settings.provider].model = el.model.value.trim();
+    const cfg = cloud();
+    if (!cfg) return;
+    cfg.model = el.model.value.trim();
     scheduleSave();
   });
   el.baseUrl.addEventListener("input", () => {
-    settings[settings.provider].baseUrl = el.baseUrl.value.trim();
+    const cfg = cloud();
+    if (!cfg) return;
+    cfg.baseUrl = el.baseUrl.value.trim();
     renderNotes();
     scheduleSave();
   });
-  el.effort.addEventListener("change", () => {
-    settings.effort = el.effort.value;
-    scheduleSave(0);
-  });
+  effortSelect = select(
+    el.effort,
+    EFFORTS,
+    () => settings.effort,
+    (value) => {
+      settings.effort = value;
+      scheduleSave(0);
+    },
+  );
+  comboBox(el.model, () =>
+    settings.provider === "local" ? [] : MODELS[settings.provider].map((m) => ({ value: m.value, hint: m.label })),
+  );
+  comboBox(el.targetLang, () => LANGS);
+  comboBox(el.secondaryLang, () => LANGS);
 
   el.test.addEventListener("click", async () => {
     if (el.test.getAttribute("aria-busy") === "true") return;
@@ -781,7 +1058,9 @@ async function refreshExternal() {
 async function init() {
   ui = await invoke<UiState>("get_state");
   settings = ui.settings;
+  local = await invoke<LocalStatus>("local_status");
   document.documentElement.dataset.platform = ui.platform;
+  document.documentElement.dataset.corners = ui.rounded ? "round" : "square";
 
   el.version.textContent = ui.version;
   el.targetLang.value = settings.targetLang;
@@ -792,7 +1071,20 @@ async function init() {
   renderProvider();
   renderActions();
   bind();
-  showView(requiresKey() && !ui.keys[settings.provider] ? "model" : "actions");
+  showView((requiresKey() && !hasKey()) || (settings.provider === "local" && !localReady()) ? "model" : "actions");
+
+  await listen<LocalProgress>("local-progress", ({ payload }) => {
+    const finished = payload.stage === "done" || payload.stage === "error" || payload.stage === "cancelled";
+    local.download = finished ? null : payload;
+    localError = payload.stage === "error" ? { model: payload.model, message: payload.message ?? "Не скачалось" } : null;
+    if (finished) {
+      // The app picks a model that just came in.
+      if (payload.stage === "done") settings.local.model = payload.model;
+      void refreshLocal();
+    } else if (settings.provider === "local") {
+      renderLocal();
+    }
+  });
 
   await listen<Settings>("settings-changed", ({ payload }) => {
     if (payload.paused !== settings.paused) {

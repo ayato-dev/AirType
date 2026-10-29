@@ -62,7 +62,7 @@ pub fn apply_settings(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyE
     let old = state.settings();
     state.store(settings.clone())?;
 
-    if old.actions != settings.actions || old.paused != settings.paused {
+    if old.actions != settings.actions || old.panel != settings.panel || old.paused != settings.paused {
         hotkeys::apply(app);
     }
     if old.paused != settings.paused {

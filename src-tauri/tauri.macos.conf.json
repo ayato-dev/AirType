@@ -7,8 +7,9 @@
         "url": "index.html",
         "width": 460,
         "height": 700,
-        "resizable": false,
-        "maximizable": false,
+        "minWidth": 420,
+        "minHeight": 520,
+        "resizable": true,
         "decorations": true,
         "transparent": true,
         "visible": false,
@@ -23,7 +24,7 @@
         },
         "titleBarStyle": "Overlay",
         "hiddenTitle": false,
-        "minimizable": false
+        "minimizable": true
       },
       {
         "label": "hud",
@@ -39,8 +40,15 @@
         "focusable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "shadow": false,
-        "visibleOnAllWorkspaces": true
+        "shadow": true,
+        "visibleOnAllWorkspaces": true,
+        "windowEffects": {
+          "effects": [
+            "popover"
+          ],
+          "state": "active",
+          "radius": 12
+        }
       }
     ]
   }

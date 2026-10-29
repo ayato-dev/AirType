@@ -1,0 +1,681 @@
+//! A small model on this computer: llama.cpp's server with Qwen3.5, both
+//! downloaded from inside the app and checked against known hashes. No key, and
+//! no internet once they are here.
+//!
+//! The server starts on the first request and quits after ten idle minutes, so
+//! the gigabyte or two it takes is only held while the user actually works.
+
+use crate::state::{self, AppState};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    net::{Ipv4Addr, TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, Once,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, Manager};
+
+pub struct Model {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// What it is good for, in the user's words.
+    pub note: &'static str,
+    file: &'static str,
+    url: &'static str,
+    pub size: u64,
+    sha256: &'static str,
+}
+
+/// Qwen3.5 knows 201 languages and is Apache 2.0. Q4_K_M keeps nearly all of its
+/// quality at a quarter of the size.
+pub const MODELS: &[Model] = &[
+    Model {
+        id: "qwen3.5-2b",
+        name: "Qwen3.5 2B",
+        note: "Быстрая, для перевода и исправлений",
+        file: "Qwen3.5-2B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+        size: 1_280_835_840,
+        sha256: "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+    },
+    Model {
+        id: "qwen3.5-4b",
+        name: "Qwen3.5 4B",
+        note: "Точнее и пишет живее, но вдвое медленнее",
+        file: "Qwen3.5-4B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+        size: 2_740_937_888,
+        sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+    },
+];
+
+/// The llama.cpp build the server comes from. A pinned build, so the hashes hold.
+const LLAMA_BUILD: &str = "b11669";
+
+struct Runtime {
+    asset: &'static str,
+    size: u64,
+    sha256: &'static str,
+}
+
+/// The CPU build for this system; on Apple silicon it runs on the GPU through Metal.
+fn runtime() -> Option<Runtime> {
+    let (asset, size, sha256) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => (
+            "llama-b11669-bin-win-cpu-x64.zip",
+            19_537_886,
+            "37b3efcf962847ca869745fd4ccf7f5e7e8dacfeff9fa3523b4ca8cdc66d632b",
+        ),
+        ("windows", "aarch64") => (
+            "llama-b11669-bin-win-cpu-arm64.zip",
+            12_442_177,
+            "9cff39ffed17edcd03a7d876073f74d7b48cd43a1e5eafdd59ee094185ad871b",
+        ),
+        ("macos", "aarch64") => (
+            "llama-b11669-bin-macos-arm64.tar.gz",
+            12_191_582,
+            "dbed55493d72bc1ba2babc8770d669c2289b5bc4ee9fb2a4dfc158d45b7d13fd",
+        ),
+        ("macos", "x86_64") => (
+            "llama-b11669-bin-macos-x64.tar.gz",
+            11_677_404,
+            "cab28238d78158109b48deb27b05d50e0dcef56275d2e76da9ca8281526c7532",
+        ),
+        ("linux", "x86_64") => (
+            "llama-b11669-bin-ubuntu-x64.tar.gz",
+            17_851_611,
+            "cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac",
+        ),
+        ("linux", "aarch64") => (
+            "llama-b11669-bin-ubuntu-arm64.tar.gz",
+            13_900_160,
+            "9ac6fda2058d35677608a06f751a50122ddfa4ce0ddb7f084466b8e79b6d4a99",
+        ),
+        _ => return None,
+    };
+    Some(Runtime { asset, size, sha256 })
+}
+
+pub fn supported() -> bool {
+    runtime().is_some()
+}
+
+pub fn model(id: &str) -> Option<&'static Model> {
+    MODELS.iter().find(|m| m.id == id)
+}
+
+fn root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_local_data_dir().map(|dir| dir.join("local")).map_err(|e| e.to_string())
+}
+
+fn model_path(app: &AppHandle, model: &Model) -> Result<PathBuf, String> {
+    Ok(root(app)?.join("models").join(model.file))
+}
+
+fn runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(root(app)?.join(format!("llama-{LLAMA_BUILD}")))
+}
+
+const SERVER_EXE: &str = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+
+/// The server inside the unpacked build, wherever the archive put it.
+fn find_server(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|name| name == SERVER_EXE) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+pub fn downloaded(app: &AppHandle, model: &Model) -> bool {
+    model_path(app, model).is_ok_and(|path| fs::metadata(path).is_ok_and(|m| m.len() == model.size))
+}
+
+fn runtime_ready(app: &AppHandle) -> bool {
+    runtime_dir(app).is_ok_and(|dir| find_server(&dir).is_some())
+}
+
+// ---------- download ----------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub model: String,
+    /// `server`, `model`, `check`, `done`, `error` or `cancelled`.
+    pub stage: &'static str,
+    pub done: u64,
+    pub total: u64,
+    pub message: Option<String>,
+}
+
+static DOWNLOAD: Mutex<Option<Progress>> = Mutex::new(None);
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+pub fn progress() -> Option<Progress> {
+    DOWNLOAD.lock().unwrap().clone()
+}
+
+fn report(app: &AppHandle, progress: Progress) {
+    let finished = matches!(progress.stage, "done" | "error" | "cancelled");
+    let _ = app.emit_to("main", "local-progress", &progress);
+    *DOWNLOAD.lock().unwrap() = (!finished).then_some(progress);
+}
+
+/// Fetches the server (once) and the model in the background, telling the
+/// settings window how it goes. The model becomes the chosen one when it is in.
+pub fn download(app: &AppHandle, id: &str) -> Result<(), String> {
+    let model = model(id).ok_or("Нет такой модели")?;
+    let runtime = runtime().ok_or("Для этой системы локальной модели пока нет")?;
+    {
+        let mut current = DOWNLOAD.lock().unwrap();
+        if current.is_some() {
+            return Err("Уже качаю, подожди".into());
+        }
+        *current =
+            Some(Progress { model: model.id.into(), stage: "server", done: 0, total: 0, message: None });
+    }
+    CANCEL.store(false, Ordering::SeqCst);
+    let app = app.clone();
+    thread::spawn(move || {
+        let result = fetch_all(&app, model, &runtime);
+        let (stage, message) = match result {
+            Ok(()) => ("done", None),
+            Err(_) if CANCEL.load(Ordering::SeqCst) => ("cancelled", None),
+            Err(e) => ("error", Some(e)),
+        };
+        if stage == "done" {
+            let mut settings = app.state::<AppState>().settings();
+            settings.local.model = model.id.into();
+            let _ = state::apply_settings(&app, settings);
+        }
+        report(&app, Progress { model: model.id.into(), stage, done: 0, total: 0, message });
+    });
+    Ok(())
+}
+
+pub fn cancel() {
+    CANCEL.store(true, Ordering::SeqCst);
+}
+
+fn fetch_all(app: &AppHandle, model: &'static Model, runtime: &Runtime) -> Result<(), String> {
+    let root = root(app)?;
+    fs::create_dir_all(root.join("models")).map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    if !runtime_ready(app) {
+        let url = format!(
+            "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}/{}",
+            runtime.asset
+        );
+        let archive = root.join(format!("{}.part", runtime.asset));
+        fetch(app, &client, &url, &archive, runtime.size, runtime.sha256, model.id, "server")?;
+        unpack(&archive, &runtime_dir(app)?, runtime.asset)?;
+        let _ = fs::remove_file(&archive);
+    }
+
+    if !downloaded(app, model) {
+        let path = model_path(app, model)?;
+        let part = path.with_extension("gguf.part");
+        fetch(app, &client, model.url, &part, model.size, model.sha256, model.id, "model")?;
+        fs::rename(&part, &path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Downloads to `path`, picking up a cut-off download where it stopped, and
+/// checks the size and the hash. A file that doesn't match is deleted.
+#[allow(clippy::too_many_arguments)]
+fn fetch(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    size: u64,
+    sha256: &str,
+    model: &str,
+    stage: &'static str,
+) -> Result<(), String> {
+    let mut hasher = Sha256::new();
+    let mut have = fs::metadata(path).map_or(0, |m| m.len());
+    if have > size {
+        let _ = fs::remove_file(path);
+        have = 0;
+    }
+    if have > 0 {
+        // The part already on disk goes into the hash first.
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+    }
+
+    let mut done = have;
+    let mut last = Instant::now();
+    let tick = |done: u64| {
+        report(app, Progress { model: model.into(), stage, done, total: size, message: None });
+    };
+    tick(done);
+
+    if have < size {
+        tauri::async_runtime::block_on(async {
+            let mut request = client.get(url);
+            if have > 0 {
+                request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
+            }
+            let mut response = request.send().await.map_err(network)?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(format!("Сервер ответил {status}"));
+            }
+            let mut file = if have > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+                fs::OpenOptions::new().append(true).open(path).map_err(|e| e.to_string())?
+            } else {
+                // The server sends the whole file again.
+                hasher = Sha256::new();
+                done = 0;
+                File::create(path).map_err(|e| e.to_string())?
+            };
+            while let Some(chunk) = response.chunk().await.map_err(network)? {
+                if CANCEL.load(Ordering::SeqCst) {
+                    return Err("cancelled".into());
+                }
+                file.write_all(&chunk).map_err(|e| format!("Не записалось на диск: {e}"))?;
+                hasher.update(&chunk);
+                done += chunk.len() as u64;
+                if done > size {
+                    break;
+                }
+                if last.elapsed() >= Duration::from_millis(200) {
+                    last = Instant::now();
+                    tick(done);
+                }
+            }
+            file.flush().map_err(|e| e.to_string())
+        })?;
+    }
+
+    report(app, Progress { model: model.into(), stage: "check", done: size, total: size, message: None });
+    let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if done != size || digest != sha256 {
+        let _ = fs::remove_file(path);
+        return Err("Файл скачался битым, попробуй ещё раз".into());
+    }
+    Ok(())
+}
+
+fn network(e: reqwest::Error) -> String {
+    if e.is_connect() || e.is_timeout() {
+        "Связь оборвалась. Нажми ещё раз, докачаю с того же места".into()
+    } else {
+        format!("Ошибка сети: {e}")
+    }
+}
+
+/// Unpacks next to the destination, then moves it in, so a half-unpacked build never counts.
+fn unpack(archive: &Path, dest: &Path, name: &str) -> Result<(), String> {
+    let staging = dest.with_extension("unpacking");
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let file = File::open(archive).map_err(|e| e.to_string())?;
+    let unpacked = if name.ends_with(".zip") { unzip(file, &staging) } else { untar(file, &staging) };
+    unpacked.map_err(|e| format!("Не распаковалось: {e}"))?;
+    let server = find_server(&staging).ok_or("В архиве нет llama-server")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&server, fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    let _ = server;
+    let _ = fs::remove_dir_all(dest);
+    fs::rename(&staging, dest).map_err(|e| e.to_string())
+}
+
+/// The build carries two dozen tools; the server needs only itself and the libraries.
+fn wanted(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    name == SERVER_EXE
+        || name == "LICENSE"
+        || name.ends_with(".dll")
+        || name.ends_with(".dylib")
+        || name.contains(".so")
+}
+
+#[cfg(windows)]
+fn unzip(file: File, dest: &Path) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        // enclosed_name refuses paths that climb out of the folder.
+        let Some(path) = entry.enclosed_name() else { continue };
+        if entry.is_dir() || !wanted(&path) {
+            continue;
+        }
+        let out = dest.join(path);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut file = File::create(&out).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn unzip(_file: File, _dest: &Path) -> Result<(), String> {
+    Err("zip".into())
+}
+
+#[cfg(not(windows))]
+fn untar(file: File, dest: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if wanted(&path) {
+            // unpack_in refuses paths that climb out of the folder; library symlinks come along.
+            entry.unpack_in(dest).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn untar(_file: File, _dest: &Path) -> Result<(), String> {
+    Err("tar.gz".into())
+}
+
+pub fn delete(app: &AppHandle, id: &str) -> Result<(), String> {
+    let model = model(id).ok_or("Нет такой модели")?;
+    if DOWNLOAD.lock().unwrap().as_ref().is_some_and(|p| p.model == id) {
+        return Err("Сначала останови загрузку".into());
+    }
+    let mut server = SERVER.lock().unwrap();
+    if server.as_ref().is_some_and(|s| s.model == id) {
+        stop(&mut server);
+    }
+    let path = model_path(app, model)?;
+    for file in [path.clone(), path.with_extension("gguf.part")] {
+        match fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+// ---------- the server ----------
+
+struct Server {
+    child: Child,
+    port: u16,
+    model: String,
+    used: Instant,
+}
+
+static SERVER: Mutex<Option<Server>> = Mutex::new(None);
+const IDLE: Duration = Duration::from_secs(10 * 60);
+
+fn stop(server: &mut Option<Server>) {
+    if let Some(mut s) = server.take() {
+        let _ = s.child.kill();
+        let _ = s.child.wait();
+    }
+}
+
+/// Stops the server; called when the app quits.
+pub fn shutdown() {
+    stop(&mut SERVER.lock().unwrap());
+}
+
+/// Marks the server as just used, so the idle timer starts over.
+pub fn touch() {
+    if let Some(server) = SERVER.lock().unwrap().as_mut() {
+        server.used = Instant::now();
+    }
+}
+
+/// The address of a running server with the model, starting it if needed.
+pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
+    let model = model(id).ok_or("Выбери модель в настройках")?;
+    let mut server = SERVER.lock().unwrap();
+    if let Some(s) = server.as_mut() {
+        if s.model == model.id && matches!(s.child.try_wait(), Ok(None)) {
+            s.used = Instant::now();
+            return Ok(address(s.port));
+        }
+        stop(&mut server);
+    }
+    if !downloaded(app, model) {
+        return Err("Сначала скачай модель в настройках, раздел «Модель»".into());
+    }
+    let exe = runtime_dir(app)
+        .ok()
+        .and_then(|dir| find_server(&dir))
+        .ok_or("Сначала скачай модель в настройках")?;
+    let port = free_port().ok_or("Не нашёл свободный порт для модели")?;
+
+    // What the server says goes to a log next to the models, for when it won't start.
+    let log = root(app).ok().and_then(|dir| File::create(dir.join("server.log")).ok());
+    let mut command = Command::new(&exe);
+    command
+        .current_dir(exe.parent().unwrap_or(Path::new(".")))
+        .arg("--model")
+        .arg(model_path(app, model)?)
+        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+        // One request at a time, with room for a long text and its answer.
+        .args(["--ctx-size", "8192", "--parallel", "1", "--jinja", "--no-webui"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log.map_or_else(Stdio::null, Stdio::from));
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        command.args(["--n-gpu-layers", "99"]);
+    }
+    platform::prepare(&mut command);
+    let child = command.spawn().map_err(|e| format!("Модель не запустилась: {e}"))?;
+    platform::adopt(&child);
+    let mut s = Server { child, port, model: model.id.into(), used: Instant::now() };
+
+    // Loading the weights takes a few seconds, longer from a slow disk.
+    let start = Instant::now();
+    loop {
+        if healthy(port) {
+            break;
+        }
+        if !matches!(s.child.try_wait(), Ok(None)) {
+            return Err(
+                "Модель не запустилась. Что пошло не так, написано в server.log в папке с моделями".into()
+            );
+        }
+        if start.elapsed() > Duration::from_secs(120) {
+            let _ = s.child.kill();
+            return Err("Модель слишком долго загружается".into());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    s.used = Instant::now();
+    *server = Some(s);
+    watch_idle();
+    Ok(address(port))
+}
+
+fn address(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
+fn free_port() -> Option<u16> {
+    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?.local_addr().ok().map(|a| a.port())
+}
+
+/// `/health` answers 200 once the model is loaded and 503 while it loads.
+fn healthy(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) else { return false };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    if stream.write_all(b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    let n = stream.read(&mut head).unwrap_or(0);
+    head[..n].starts_with(b"HTTP/1.1 200") || head[..n].starts_with(b"HTTP/1.0 200")
+}
+
+/// Stops the server after ten idle minutes, giving its memory back.
+fn watch_idle() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| {
+        thread::spawn(|| loop {
+            thread::sleep(Duration::from_secs(30));
+            let mut server = SERVER.lock().unwrap();
+            if server.as_ref().is_some_and(|s| s.used.elapsed() > IDLE) {
+                stop(&mut server);
+            }
+        });
+    });
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use std::process::{Child, Command};
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    pub fn prepare(command: &mut Command) {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    /// A job that ends the server when Airtype ends, even if it crashes.
+    fn job() -> Option<HANDLE> {
+        static JOB: OnceLock<usize> = OnceLock::new();
+        let job = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            job as usize
+        });
+        (job != 0).then_some(job as HANDLE)
+    }
+
+    pub fn adopt(child: &Child) {
+        if let Some(job) = job() {
+            unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    /// The kernel stops the server when Airtype ends, even if it crashes.
+    pub fn prepare(command: &mut Command) {
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+    }
+
+    pub fn adopt(_child: &Child) {}
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+mod platform {
+    use std::process::{Child, Command};
+
+    pub fn prepare(_command: &mut Command) {}
+    pub fn adopt(_child: &Child) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn models_are_known() {
+        assert!(model("qwen3.5-2b").is_some());
+        assert!(model("nope").is_none());
+        for m in MODELS {
+            assert_eq!(m.sha256.len(), 64);
+            assert!(m.url.ends_with(m.file));
+        }
+        assert_eq!(crate::config::LocalConfig::default().model, MODELS[0].id);
+    }
+
+    #[test]
+    fn finds_server_in_nested_folders() {
+        let dir = std::env::temp_dir().join(format!("airtype-test-local-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("build").join("bin")).unwrap();
+        fs::write(dir.join("build").join("bin").join(SERVER_EXE), b"").unwrap();
+        assert_eq!(find_server(&dir), Some(dir.join("build").join("bin").join(SERVER_EXE)));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unpacks_only_the_server() {
+        assert!(wanted(Path::new("llama-b11669/llama-server")) || cfg!(windows));
+        assert!(wanted(Path::new("llama-b11669/libllama.so.0.7.0")));
+        assert!(wanted(Path::new("llama-b11669/libggml-metal.0.dylib")));
+        assert!(wanted(Path::new("ggml-cpu-zen4.dll")));
+        assert!(!wanted(Path::new("llama-b11669/llama-bench")));
+        assert!(!wanted(Path::new("llama-b11669/")));
+    }
+
+    #[test]
+    fn health_needs_a_server() {
+        let port = free_port().unwrap();
+        assert!(!healthy(port));
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = stream.read(&mut buf);
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}").unwrap();
+        });
+        assert!(healthy(port));
+        server.join().unwrap();
+    }
+}

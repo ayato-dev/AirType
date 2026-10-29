@@ -9,7 +9,7 @@ export default defineConfig({
   build: {
     target: ["es2021", "chrome105", "safari15"],
     rollupOptions: {
-      input: { main: page("index.html"), hud: page("hud.html") },
+      input: { main: page("index.html"), hud: page("hud.html"), panel: page("panel.html") },
     },
   },
 });

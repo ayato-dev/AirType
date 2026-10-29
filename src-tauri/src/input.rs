@@ -1,7 +1,9 @@
-//! Synthetic keyboard input for the app that has focus: copy, select all, paste.
+//! Synthetic keyboard input for the app that has focus: copy, select all, paste,
+//! and typing an answer in.
 //!
-//! Keys are sent by physical key code, not by character, so Ctrl/Cmd+C works
-//! with any keyboard layout (Russian included).
+//! Shortcuts are sent by physical key code, not by character, so Ctrl/Cmd+C works
+//! with any keyboard layout (Russian included). Typed text goes as Unicode
+//! characters, which no layout can change either.
 
 use std::{
     thread,
@@ -15,7 +17,24 @@ pub enum Chord {
     SelectAll,
 }
 
-pub use imp::{accessibility_granted, foreground, restore_focus, terminal_focused, wayland, SUPPORTED};
+pub use imp::{
+    accessibility_granted, foreground, restore_focus, terminal_focused, wayland, Target, SUPPORTED,
+};
+
+/// Gives focus back to the app the text came from and waits until it has it.
+/// False when another window took over meanwhile: then typing or pasting would
+/// land in the wrong place.
+pub fn return_to(target: Target) -> bool {
+    imp::restore_focus(target);
+    let start = Instant::now();
+    while !imp::is_foreground(target) {
+        if start.elapsed() >= Duration::from_millis(600) {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    true
+}
 
 /// The hotkey's own modifiers are still held when it fires; pressing Ctrl+C on top
 /// of them would send e.g. Ctrl+Alt+C, so wait until the user lets go.
@@ -28,6 +47,17 @@ pub fn wait_modifiers_released(timeout: Duration) {
 
 pub fn press(chord: Chord) {
     imp::send(chord);
+}
+
+/// Types the text into the focused field as keystrokes, so the clipboard is never
+/// touched. Only one line: Enter would send a chat message, Tab would leave the
+/// field. False when the text or the system doesn't allow it; then paste instead.
+pub fn type_text(text: &str) -> bool {
+    typeable(text) && imp::type_text(text)
+}
+
+fn typeable(text: &str) -> bool {
+    imp::CAN_TYPE && !text.is_empty() && text.chars().count() <= 1000 && !text.contains(['\n', '\r', '\t'])
 }
 
 /// Window classes of Windows consoles.
@@ -157,13 +187,14 @@ mod imp {
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
     };
 
     pub const SUPPORTED: bool = true;
+    pub const CAN_TYPE: bool = true;
 
     /// Foreground window handle, stored as an integer so it can cross threads.
     pub type Target = usize;
@@ -205,13 +236,42 @@ mod imp {
         }
     }
 
+    /// One UTF-16 unit as a key press; an emoji goes as its two surrogates.
+    fn unicode(unit: u16, up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0,
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    pub fn type_text(text: &str) -> bool {
+        let inputs: Vec<INPUT> =
+            text.encode_utf16().flat_map(|unit| [unicode(unit, false), unicode(unit, true)]).collect();
+        // A window of an elevated app refuses input from us; then nothing goes in at all.
+        let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
+        sent as usize == inputs.len()
+    }
+
     pub fn foreground() -> Target {
         unsafe { GetForegroundWindow() as usize }
     }
 
-    /// Puts focus back on the window the text came from, in case something stole it.
+    pub fn is_foreground(target: Target) -> bool {
+        target == 0 || foreground() == target
+    }
+
+    /// Puts focus back on the window the text came from. Allowed while one of our
+    /// windows is in front, or while we handle the hotkey.
     pub fn restore_focus(target: Target) {
-        if target != 0 && foreground() != target {
+        if !is_foreground(target) {
             unsafe {
                 SetForegroundWindow(target as _);
             }
@@ -265,11 +325,13 @@ mod imp {
     use core_foundation::string::CFString;
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 
     pub const SUPPORTED: bool = true;
+    pub const CAN_TYPE: bool = true;
 
-    /// macOS gives focus back to the previous app on its own, so nothing to remember.
-    pub struct Target;
+    /// The frontmost app's process id; 0 when there is none.
+    pub type Target = i32;
 
     const KEY_A: CGKeyCode = 0x00;
     const KEY_C: CGKeyCode = 0x08;
@@ -309,14 +371,55 @@ mod imp {
         }
     }
 
-    pub fn foreground() -> Target {
-        Target
+    /// Key events that carry their text: the app inserts the characters as typed,
+    /// whatever the key code says. macOS takes up to 20 UTF-16 units per event.
+    pub fn type_text(text: &str) -> bool {
+        let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+            return false;
+        };
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut start = 0;
+        while start < units.len() {
+            let mut end = (start + 20).min(units.len());
+            // Keep a surrogate pair in one event.
+            if end < units.len() && (0xD800..0xDC00).contains(&units[end - 1]) {
+                end -= 1;
+            }
+            for down in [true, false] {
+                let Ok(event) = CGEvent::new_keyboard_event(source.clone(), KEY_A, down) else {
+                    return false;
+                };
+                event.set_flags(CGEventFlags::empty());
+                event.set_string_from_utf16_unchecked(&units[start..end]);
+                event.post(CGEventTapLocation::HID);
+            }
+            start = end;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        true
     }
 
-    pub fn restore_focus(_target: Target) {}
+    pub fn foreground() -> Target {
+        NSWorkspace::sharedWorkspace().frontmostApplication().map_or(0, |app| app.processIdentifier())
+    }
+
+    pub fn is_foreground(target: Target) -> bool {
+        target == 0 || foreground() == target
+    }
+
+    /// Our panel made Airtype the active app; hand activation back to the app the
+    /// text came from. An active app may do that without asking.
+    pub fn restore_focus(target: Target) {
+        if is_foreground(target) {
+            return;
+        }
+        if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(target) {
+            app.activateWithOptions(NSApplicationActivationOptions::empty());
+        }
+    }
 
     pub fn terminal_focused() -> bool {
-        objc2_app_kit::NSWorkspace::sharedWorkspace()
+        NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .and_then(|app| app.bundleIdentifier())
             .is_some_and(|id| super::is_terminal_bundle(&id.to_string()))
@@ -344,15 +447,23 @@ mod imp {
     use std::cell::OnceCell;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
-        AtomEnum, ConnectionExt as _, KeyButMask, Keycode, Keysym, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+        AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, KeyButMask, Keycode, Keysym,
+        KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
     };
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::rust_connection::RustConnection;
 
     pub const SUPPORTED: bool = true;
 
-    /// The hotkey's window keeps focus on X11; nothing to remember.
-    pub struct Target;
+    /// The active X11 window; 0 when the window manager doesn't say.
+    pub type Target = u32;
+
+    /// XTest sends key codes, and a character missing from the layout has none.
+    pub const CAN_TYPE: bool = false;
+
+    pub fn type_text(_text: &str) -> bool {
+        false
+    }
 
     const XK_A: Keysym = 0x61;
     const XK_C: Keysym = 0x63;
@@ -439,10 +550,32 @@ mod imp {
     }
 
     pub fn foreground() -> Target {
-        Target
+        let mut window = 0;
+        with_display(|d| window = active_window(d).unwrap_or(0));
+        window
     }
 
-    pub fn restore_focus(_target: Target) {}
+    pub fn is_foreground(target: Target) -> bool {
+        target == 0 || foreground() == target
+    }
+
+    /// Asks the window manager to activate the window, as a taskbar would.
+    pub fn restore_focus(target: Target) {
+        if is_foreground(target) {
+            return;
+        }
+        with_display(|d| {
+            let Ok(Ok(reply)) = d.conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").map(|cookie| cookie.reply())
+            else {
+                return;
+            };
+            // Source 2: a pager or taskbar, which window managers obey without focus-stealing checks.
+            let event = ClientMessageEvent::new(32, target, reply.atom, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
+            let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+            let _ = d.conn.send_event(false, d.root, mask, event);
+            let _ = d.conn.flush();
+        });
+    }
 
     pub fn accessibility_granted(_prompt: bool) -> bool {
         true
@@ -485,14 +618,23 @@ mod imp {
     use super::Chord;
 
     pub const SUPPORTED: bool = false;
-    pub struct Target;
+    pub const CAN_TYPE: bool = false;
+    pub type Target = u32;
+
+    pub fn is_foreground(_target: Target) -> bool {
+        true
+    }
+
+    pub fn type_text(_text: &str) -> bool {
+        false
+    }
 
     pub fn modifiers_down() -> bool {
         false
     }
     pub fn send(_chord: Chord) {}
     pub fn foreground() -> Target {
-        Target
+        0
     }
     pub fn restore_focus(_target: Target) {}
     pub fn accessibility_granted(_prompt: bool) -> bool {

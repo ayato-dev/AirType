@@ -1,12 +1,12 @@
 use crate::{
     config::{self, Provider, Settings},
     hotkeys::{self, HotkeyError},
-    input, llm,
+    hud, input, llm, local, panel,
     state::{self, AppState},
 };
 use serde::Serialize;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_autostart::ManagerExt;
 
 #[derive(Serialize)]
@@ -25,8 +25,12 @@ pub struct UiState {
     /// Why the settings file was set aside, if it was.
     notice: Option<String>,
     platform: &'static str,
+    /// Windows 11 rounds the settings window; the page follows its corners.
+    rounded: bool,
     /// Linux under Wayland, where hotkeys reach only X11 apps.
     wayland: bool,
+    /// There is a llama.cpp build for this system.
+    local_supported: bool,
     accessibility: bool,
     autostart: bool,
     version: String,
@@ -54,7 +58,9 @@ pub async fn get_state(app: AppHandle) -> Result<UiState, String> {
         hotkey_errors,
         notice,
         platform: std::env::consts::OS,
+        rounded: crate::glass::rounded(),
         wayland: input::wayland(),
+        local_supported: local::supported(),
         accessibility: input::accessibility_granted(false),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         version: app.package_info().version.to_string(),
@@ -73,16 +79,16 @@ pub async fn set_api_key(provider: Provider, key: String) -> Result<(), String> 
 
 /// Runs the first action on a sample phrase so the user can check key and model.
 #[tauri::command]
-pub async fn test_connection(state: State<'_, AppState>, text: String) -> Result<String, String> {
-    let settings = state.settings();
+pub async fn test_connection(app: AppHandle, text: String) -> Result<String, String> {
+    let settings = app.state::<AppState>().settings();
     let action = settings.actions.first().ok_or("Нет ни одного действия")?;
-    let provider = settings.provider;
-    let api_key = keychain(move || config::api_key(provider)).await?;
-    if api_key.is_none() && settings.requires_key() {
-        return Err("Сначала вставь ключ API".into());
-    }
     let system = llm::system_prompt(&settings, action);
-    llm::complete(&state.http, &settings, api_key.as_deref(), &system, &text).await
+    // Reads the keychain and may start the local model: off the async workers.
+    tauri::async_runtime::spawn_blocking(move || {
+        llm::answer(&app, &settings, &system, &llm::wrap_text(&text))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Turns global hotkeys off while the settings window records a new combination.
@@ -112,6 +118,92 @@ pub fn request_accessibility() -> bool {
             .spawn();
     }
     granted
+}
+
+/// The HUD page has laid out its slip at this size.
+#[tauri::command]
+pub fn hud_fit(app: AppHandle, width: f64, height: f64) {
+    hud::fit(&app, width, height);
+}
+
+#[tauri::command]
+pub fn panel_view() -> Option<panel::View> {
+    panel::view()
+}
+
+#[tauri::command]
+pub fn panel_fit(app: AppHandle, seq: u64, height: f64) {
+    panel::fit(&app, seq, height);
+}
+
+#[tauri::command]
+pub async fn panel_run(app: AppHandle, ask: panel::Ask) -> Result<String, String> {
+    panel::run(app, ask).await
+}
+
+#[tauri::command]
+pub fn panel_write(app: AppHandle, text: String) {
+    panel::write(&app, text);
+}
+
+/// Copying is the user's own choice here, so it goes to the clipboard like any copy.
+#[tauri::command]
+pub fn panel_copy(text: String) -> Result<(), String> {
+    arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn panel_close(app: AppHandle, restore: bool) {
+    panel::close(&app, restore);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModel {
+    id: &'static str,
+    name: &'static str,
+    note: &'static str,
+    size: u64,
+    downloaded: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalStatus {
+    models: Vec<LocalModel>,
+    download: Option<local::Progress>,
+}
+
+#[tauri::command]
+pub fn local_status(app: AppHandle) -> LocalStatus {
+    let models = local::MODELS
+        .iter()
+        .map(|m| LocalModel {
+            id: m.id,
+            name: m.name,
+            note: m.note,
+            size: m.size,
+            downloaded: local::downloaded(&app, m),
+        })
+        .collect();
+    LocalStatus { models, download: local::progress() }
+}
+
+#[tauri::command]
+pub fn local_download(app: AppHandle, model: String) -> Result<(), String> {
+    local::download(&app, &model)
+}
+
+#[tauri::command]
+pub fn local_cancel() {
+    local::cancel();
+}
+
+#[tauri::command]
+pub async fn local_delete(app: AppHandle, model: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || local::delete(&app, &model))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Closes settings for good; the tray builds them again when needed.

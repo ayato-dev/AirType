@@ -1,4 +1,4 @@
-use crate::{engine, state::AppState};
+use crate::{engine, panel, state::AppState};
 use serde::Serialize;
 use std::{collections::HashMap, sync::atomic::Ordering};
 use tauri::{plugin::TauriPlugin, AppHandle, Manager, Wry};
@@ -20,14 +20,19 @@ pub fn plugin() -> TauriPlugin<Wry> {
                 return;
             }
             let action_id = app.state::<AppState>().hotkeys.lock().unwrap().get(&shortcut.id()).cloned();
-            if let Some(action_id) = action_id {
-                engine::trigger(app, &action_id);
+            match action_id.as_deref() {
+                Some(PANEL) => panel::trigger(app),
+                Some(action_id) => engine::trigger(app, action_id),
+                None => {}
             }
         })
         .build()
 }
 
-/// Re-registers every action hotkey from the current settings.
+/// The id the panel's hotkey goes by, next to the action ids.
+pub const PANEL: &str = "panel";
+
+/// Re-registers every action hotkey and the panel's from the current settings.
 pub fn apply(app: &AppHandle) {
     let state = app.state::<AppState>();
     let shortcuts = app.global_shortcut();
@@ -39,9 +44,12 @@ pub fn apply(app: &AppHandle) {
     let settings = state.settings();
 
     if !settings.paused && !state.suspended.load(Ordering::SeqCst) {
-        for action in settings.actions.iter().filter(|a| a.enabled && !a.hotkey.trim().is_empty()) {
-            let error = |message: &str| HotkeyError { action_id: action.id.clone(), message: message.into() };
-            let shortcut: Shortcut = match action.hotkey.parse() {
+        let actions =
+            settings.actions.iter().filter(|a| a.enabled).map(|a| (a.id.as_str(), a.hotkey.as_str()));
+        let panel = settings.panel.enabled.then_some((PANEL, settings.panel.hotkey.as_str()));
+        for (id, hotkey) in actions.chain(panel).filter(|(_, hotkey)| !hotkey.trim().is_empty()) {
+            let error = |message: &str| HotkeyError { action_id: id.to_string(), message: message.into() };
+            let shortcut: Shortcut = match hotkey.parse() {
                 Ok(shortcut) => shortcut,
                 Err(_) => {
                     errors.push(error("Не понял это сочетание"));
@@ -54,7 +62,7 @@ pub fn apply(app: &AppHandle) {
             }
             match shortcuts.register(shortcut) {
                 Ok(()) => {
-                    map.insert(shortcut.id(), action.id.clone());
+                    map.insert(shortcut.id(), id.to_string());
                 }
                 Err(_) => errors.push(error("Сочетание занято другой программой")),
             }

@@ -1,13 +1,20 @@
-//! The small floating status pill. It never takes focus, so the paste
-//! still lands in the app the text came from.
+//! The small status slip on glass, right under the text being worked on. It
+//! never takes focus, so the answer still lands in the app the text came from.
+//!
+//! The page lays out the slip and reports its size; only then is the window
+//! sized to it, put next to the text and shown.
 
+use crate::popup::{self, Fallback, Rect};
 use serde::Serialize;
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Mutex,
+    },
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow};
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -19,13 +26,28 @@ enum HudEvent<'a> {
 
 /// Bumped on every show so a stale delayed hide doesn't close a newer message.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// A message is up; the page's size report may show the window.
+static WANTED: AtomicBool = AtomicBool::new(false);
+static ANCHOR: Mutex<Option<Rect>> = Mutex::new(None);
 
 fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("hud")
 }
 
+/// Sets up the glass once the app starts.
+pub fn init(app: &AppHandle) {
+    if let Some(hud) = window(app) {
+        crate::glass::acrylic(&hud);
+    }
+}
+
+/// The text the next messages are about; `None` puts them at the bottom of the screen.
+pub fn set_anchor(anchor: Option<Rect>) {
+    *ANCHOR.lock().unwrap() = anchor;
+}
+
 pub fn working(app: &AppHandle, action: &str, label: &str) {
-    show(app);
+    show();
     let _ = app.emit_to("hud", "hud", HudEvent::Working { action, label });
 }
 
@@ -35,15 +57,34 @@ pub fn done(app: &AppHandle) {
 }
 
 pub fn error(app: &AppHandle, message: &str) {
-    show(app);
+    show();
     let _ = app.emit_to("hud", "hud", HudEvent::Error { message });
     hide_after(app, Duration::from_millis(3800));
 }
 
-fn show(app: &AppHandle) {
+/// Takes the slip away now: the panel has the answer.
+pub fn hide(app: &AppHandle) {
     GENERATION.fetch_add(1, Ordering::SeqCst);
+    WANTED.store(false, Ordering::SeqCst);
+    if let Some(hud) = window(app) {
+        platform_hide(&hud);
+    }
+}
+
+fn show() {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    WANTED.store(true, Ordering::SeqCst);
+}
+
+/// The page has laid out the slip at this size (logical pixels).
+pub fn fit(app: &AppHandle, width: f64, height: f64) {
+    if !WANTED.load(Ordering::SeqCst) {
+        return;
+    }
     let Some(hud) = window(app) else { return };
-    place(app, &hud);
+    let _ = hud.set_size(LogicalSize::new(width, height));
+    let anchor = *ANCHOR.lock().unwrap();
+    popup::place(app, &hud, width, height, anchor, Fallback::BottomCenter);
     platform_show(&hud);
     // Clicks go through to whatever is underneath. Set after showing: GTK can't
     // change input regions of a window that was never mapped.
@@ -56,6 +97,7 @@ fn hide_after(app: &AppHandle, delay: Duration) {
     thread::spawn(move || {
         thread::sleep(delay);
         if GENERATION.load(Ordering::SeqCst) == generation {
+            WANTED.store(false, Ordering::SeqCst);
             if let Some(hud) = window(&app) {
                 platform_hide(&hud);
             }
@@ -63,23 +105,8 @@ fn hide_after(app: &AppHandle, delay: Duration) {
     });
 }
 
-/// Bottom center of the screen the mouse is on.
-fn place(app: &AppHandle, hud: &WebviewWindow) {
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
-    let (Some(monitor), Ok(size)) = (monitor, hud.outer_size()) else { return };
-    let area = monitor.work_area();
-    let margin = (56.0 * monitor.scale_factor()) as i32;
-    let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
-    let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
-    let _ = hud.set_position(PhysicalPosition::new(x, y));
-}
-
 // Tauri's show() activates the window on Windows, which would steal focus from the
-// text field, so the pill is shown with SW_SHOWNOACTIVATE instead.
+// text field, so the slip is shown with SW_SHOWNOACTIVATE instead.
 #[cfg(windows)]
 fn platform_show(hud: &WebviewWindow) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{

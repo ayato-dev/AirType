@@ -10,6 +10,8 @@ const KEYRING_SERVICE: &str = "dev.ayato.airtype";
 pub enum Provider {
     Anthropic,
     Openai,
+    /// A small model on this computer, see `local`.
+    Local,
 }
 
 impl Provider {
@@ -17,6 +19,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "anthropic",
             Provider::Openai => "openai",
+            Provider::Local => "local",
         }
     }
 }
@@ -27,6 +30,35 @@ pub struct ProviderConfig {
     pub model: String,
     /// Empty means the provider's official endpoint.
     pub base_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LocalConfig {
+    /// One of `local::MODELS`.
+    pub model: String,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self { model: "qwen3.5-2b".into() }
+    }
+}
+
+/// The panel under the text field: write for me, or work with a selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PanelConfig {
+    pub hotkey: String,
+    pub enabled: bool,
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        // ⌥⌘Space opens Finder search and ⌃⌥Space switches input sources on macOS.
+        let hotkey = if cfg!(target_os = "macos") { "Command+Alt+KeyA" } else { "Control+Alt+Space" };
+        Self { hotkey: hotkey.into(), enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +91,7 @@ pub struct Settings {
     pub provider: Provider,
     pub anthropic: ProviderConfig,
     pub openai: ProviderConfig,
+    pub local: LocalConfig,
     /// Claude `output_config.effort`; empty means the model default.
     pub effort: String,
     pub target_lang: String,
@@ -66,6 +99,7 @@ pub struct Settings {
     pub show_hud: bool,
     pub paused: bool,
     pub actions: Vec<Action>,
+    pub panel: PanelConfig,
 }
 
 impl Default for Settings {
@@ -74,20 +108,27 @@ impl Default for Settings {
             provider: Provider::Anthropic,
             anthropic: ProviderConfig { model: "claude-haiku-5-5".into(), base_url: String::new() },
             openai: ProviderConfig::default(),
+            local: LocalConfig::default(),
             effort: "low".into(),
             target_lang: "English".into(),
             secondary_lang: "Русский".into(),
             show_hud: true,
             paused: false,
             actions: default_actions(),
+            panel: PanelConfig::default(),
         }
     }
 }
 
 impl Settings {
-    /// A local OpenAI-compatible server (Ollama, LM Studio) works without a key.
+    /// The model on this computer and a local OpenAI-compatible server (Ollama,
+    /// LM Studio) work without a key.
     pub fn requires_key(&self) -> bool {
-        self.provider == Provider::Anthropic || self.openai.base_url.trim().is_empty()
+        match self.provider {
+            Provider::Anthropic => true,
+            Provider::Openai => self.openai.base_url.trim().is_empty(),
+            Provider::Local => false,
+        }
     }
 }
 

@@ -3,10 +3,14 @@ mod commands;
 mod config;
 mod engine;
 mod field;
+mod glass;
 mod hotkeys;
 mod hud;
 mod input;
 mod llm;
+mod local;
+mod panel;
+mod popup;
 mod state;
 mod tray;
 
@@ -41,6 +45,7 @@ pub fn run() {
             let handle = app.handle();
             tray::create(handle)?;
             hotkeys::apply(handle);
+            hud::init(handle);
 
             // The keychain can wait on a macOS permission prompt; ask it off the main thread.
             let handle = handle.clone();
@@ -53,15 +58,21 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Settings are destroyed on close and built again on demand; the HUD
-            // lives for the whole run and only hides.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() != "main" {
-                    api.prevent_close();
+            // and the panel live for the whole run and only hide.
+            WindowEvent::CloseRequested { api, .. } if window.label() != "main" => {
+                api.prevent_close();
+                if window.label() == "panel" {
+                    panel::close(window.app_handle(), true);
+                } else {
                     let _ = window.hide();
                 }
             }
+            WindowEvent::Focused(focused) if window.label() == "panel" => {
+                panel::focus_changed(window.app_handle(), *focused);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
@@ -72,14 +83,25 @@ pub fn run() {
             commands::set_autostart,
             commands::request_accessibility,
             commands::hide_settings,
+            commands::hud_fit,
+            commands::panel_view,
+            commands::panel_fit,
+            commands::panel_run,
+            commands::panel_write,
+            commands::panel_copy,
+            commands::panel_close,
+            commands::local_status,
+            commands::local_download,
+            commands::local_cancel,
+            commands::local_delete,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start airtype");
 
-    app.run(|_app, event| {
+    app.run(|_app, event| match event {
         // Keep running with no visible windows; only "Quit" in the tray exits.
-        if let RunEvent::ExitRequested { api, code: None, .. } = event {
-            api.prevent_exit();
-        }
+        RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+        RunEvent::Exit => local::shutdown(),
+        _ => {}
     });
 }

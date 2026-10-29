@@ -12,28 +12,36 @@ body {
   cursor: default;
 }
 
-body {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding: 0 12px 18px;
+/* The window is sized to the slip, so the slip sizes itself, not to the window. */
+.slip {
+  position: absolute;
+  top: 0;
+  left: 0;
   box-sizing: border-box;
+  width: max-content;
+  max-width: 340px;
+  padding: 8px 12px 9px;
+  color: var(--ink);
 }
 
-/* A slip of paper over whatever app is open: the word on it gets marked while the model works. */
-.slip {
-  max-width: 100%;
-  padding: 8px 12px 9px;
+/* Windows and macOS: the window itself is the glass, the slip is just its text. */
+[data-glass="native"] .slip.enter {
+  animation: fade var(--base) var(--ease);
+}
+
+/* Linux: a slip of paper over whatever app is open, with room around it for its shadow. */
+[data-glass="sheet"] .slip {
+  top: 12px;
+  left: 12px;
   border-radius: 11px;
   background: var(--sheet);
-  color: var(--ink);
   box-shadow:
     0 0 0 1px var(--sheet-edge),
     0 2px 4px rgba(0, 0, 0, 0.06),
-    0 10px 24px -12px rgba(0, 0, 0, 0.32);
+    0 8px 18px -10px rgba(0, 0, 0, 0.32);
 }
 
-.slip.enter {
+[data-glass="sheet"] .slip.enter {
   animation: enter var(--base) var(--ease);
 }
 
@@ -107,12 +115,18 @@ body {
 @keyframes enter {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .slip.enter {
+  [data-glass] .slip.enter {
     animation: none;
   }
 

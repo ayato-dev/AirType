@@ -1,5 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { squiggleLead } from "./flag";
+import { glass } from "./glass";
 
 type HudEvent =
   | { state: "working"; action: string; label: string }
@@ -14,6 +16,9 @@ const WORKING: Record<string, string> = {
 
 const slip = document.getElementById("slip") as HTMLElement;
 const text = document.getElementById("text") as HTMLElement;
+
+/** On Windows and macOS the window itself is the glass; Linux gets a paper slip with room for its shadow. */
+const margin = glass() === "sheet" ? 12 : 0;
 
 /** The marker layer repeats the text so the letters it covers switch to marker ink. */
 function say(words: string) {
@@ -32,6 +37,16 @@ function replayEntrance() {
   slip.classList.add("enter");
 }
 
+/** The window takes the slip's size; the app then puts it under the text and shows it. */
+async function fit() {
+  await document.fonts.ready;
+  const box = slip.getBoundingClientRect();
+  await invoke("hud_fit", {
+    width: Math.ceil(box.width) + margin * 2,
+    height: Math.ceil(box.height) + margin * 2,
+  });
+}
+
 void listen<HudEvent>("hud", ({ payload }) => {
   slip.dataset.state = payload.state;
   switch (payload.state) {
@@ -47,4 +62,5 @@ void listen<HudEvent>("hud", ({ payload }) => {
       replayEntrance();
       break;
   }
+  void fit();
 });

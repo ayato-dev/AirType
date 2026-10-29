@@ -81,8 +81,9 @@ pub fn show_settings(app: &AppHandle) {
                 }
             })
         });
-        if let Err(e) = built.and_then(WebviewWindowBuilder::build) {
-            eprintln!("airtype: settings window: {e}");
+        match built.and_then(WebviewWindowBuilder::build) {
+            Ok(window) => crate::glass::round(&window),
+            Err(e) => eprintln!("airtype: settings window: {e}"),
         }
     });
 }

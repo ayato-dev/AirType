@@ -79,9 +79,15 @@ button {
   overflow: hidden;
 }
 
-/* macOS clips and rims the window itself; elsewhere draw the lit edge of the glass. */
-[data-platform="macos"] .window {
+/* macOS clips and rims the window itself; elsewhere draw the lit edge of the glass.
+   Windows 11 rounds the window (8px) and the rim follows; Windows 10 keeps it square. */
+[data-platform="macos"] .window,
+[data-platform="windows"] .window {
   border-radius: 0;
+}
+
+[data-platform="windows"][data-corners="round"] .window {
+  border-radius: 8px;
 }
 
 .window::before {
@@ -170,11 +176,16 @@ button {
 }
 
 [data-platform="macos"] .brand,
-[data-platform="macos"] .win-close {
+[data-platform="macos"] .win-buttons {
   display: none;
 }
 
-.win-close {
+.win-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.win-button {
   width: 30px;
   height: 30px;
   border: 0;
@@ -186,7 +197,7 @@ button {
   transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
-.win-close:hover {
+.win-button:hover {
   background: var(--sunken);
   color: var(--ink);
 }
@@ -198,7 +209,7 @@ button {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  padding: 6px 16px 4px;
+  padding: 6px calc(16px + max(0px, (100% - 600px) / 2)) 4px;
 }
 
 [data-platform="macos"] .tabs {
@@ -234,7 +245,9 @@ button {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  padding: 18px 16px 32px 22px;
+  /* A wider window keeps a readable column in the middle. */
+  --side: max(0px, calc((100% - 600px) / 2));
+  padding: 18px calc(16px + var(--side)) 32px calc(22px + var(--side));
   --fade-top: 0px;
   --fade-bottom: 0px;
   -webkit-mask-image: linear-gradient(transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
@@ -770,9 +783,30 @@ textarea.input {
   color: var(--ink);
 }
 
-select.input {
-  appearance: none;
+/* A select is a field-shaped button; its list is the .menu below. */
+.select {
+  display: flex;
+  align-items: center;
   padding-right: 34px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.select[aria-expanded="true"] {
+  background: var(--field-focus);
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+
+.select:focus-visible {
+  outline: none;
+  background: var(--field-focus);
+  box-shadow: inset 0 0 0 1.5px var(--ink);
 }
 
 .select-wrap .icon {
@@ -783,7 +817,97 @@ select.input {
   height: 14px;
   color: var(--muted);
   transform: translateY(-50%) rotate(90deg);
+  transition: transform var(--fast) var(--ease);
   pointer-events: none;
+}
+
+.select-wrap:has([aria-expanded="true"]) .icon {
+  transform: translateY(-50%) rotate(-90deg);
+}
+
+/* ---------- drop-down list: a slip of paper under the field, the current entry marked ---------- */
+
+.menu {
+  position: fixed;
+  z-index: 50;
+  padding: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 12px;
+  background: var(--sheet);
+  box-shadow:
+    0 0 0 1px var(--sheet-edge),
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 16px 36px -14px rgba(0, 0, 0, 0.35);
+  animation: menu-in var(--fast) var(--ease);
+}
+
+.menu[data-side="above"] {
+  animation-name: menu-in-above;
+}
+
+.menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.menu::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--rule);
+}
+
+.menu-item {
+  min-height: 34px;
+  padding: 6px 9px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.menu-item.active {
+  background: var(--hover);
+}
+
+@media (prefers-color-scheme: dark) {
+  .menu-item.active {
+    background: rgba(255, 255, 255, 0.07);
+  }
+}
+
+.menu-text {
+  padding: 1px 4px 2px;
+  margin-left: -4px;
+  border-radius: var(--radius-mark);
+  white-space: nowrap;
+}
+
+.menu-item[aria-selected="true"] .menu-text {
+  background: var(--marker);
+  color: var(--marker-ink);
+  font-weight: 600;
+}
+
+.menu-hint {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes menu-in-above {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
 }
 
 .more summary {
@@ -878,6 +1002,72 @@ select.input {
 .pick-option input:focus-visible + span {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
+}
+
+/* With three choices the first "или" becomes a comma that sits on the word before it. */
+.pick-word.comma {
+  margin-left: -10px;
+}
+
+/* ---------- the model on this computer ---------- */
+
+.local {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.local-model {
+  align-items: center;
+}
+
+.local-model .action-main:disabled {
+  cursor: default;
+}
+
+.local-name {
+  position: relative;
+  display: inline-block;
+  margin-left: -4px;
+  padding: 0 4px 1px;
+  border-radius: var(--radius-mark);
+}
+
+.local-model[data-chosen] .local-name {
+  background: var(--marker);
+  color: var(--marker-ink);
+}
+
+/* The highlighter runs through the name as far as the download has come. */
+.local-name.loading::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  border-radius: inherit;
+  background: var(--marker);
+  color: var(--marker-ink);
+  clip-path: inset(0 calc(100% - var(--done, 0%)) 0 0);
+  transition: clip-path var(--base) var(--ease);
+}
+
+.local-side {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: var(--fs-meta);
+}
+
+.local-side .hint {
+  white-space: nowrap;
+}
+
+.local-error {
+  margin: -4px 10px 8px;
+  font-size: var(--fs-meta);
+  line-height: 19px;
+  text-wrap: pretty;
 }
 
 /* ---------- the one button that does something ---------- */

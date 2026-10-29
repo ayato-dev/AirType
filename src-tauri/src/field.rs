@@ -7,6 +7,8 @@
 // Elsewhere the app doesn't run, and nothing builds a snapshot.
 #![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
+use crate::popup::Rect;
+
 pub enum Focused {
     /// A password field: its text never leaves it.
     Password,
@@ -16,6 +18,7 @@ pub enum Focused {
     /// page, a list, a button): select-all there would grab the whole page.
     Unknown {
         select_all: bool,
+        editable: Option<bool>,
     },
 }
 
@@ -34,6 +37,9 @@ pub struct Snapshot {
     pub text: String,
     /// Nothing was selected, so the answer replaces the whole field.
     pub whole: bool,
+    /// Whether the answer can go back in: false for a page or a document opened
+    /// for reading, `None` when the app doesn't say.
+    pub editable: Option<bool>,
     /// The text exactly as the app reported it, to notice edits made while waiting.
     raw: String,
     field: imp::Field,
@@ -43,10 +49,16 @@ pub fn focused() -> Focused {
     imp::focused()
 }
 
+/// Where the focused text is on screen: the selection, else the caret in a large
+/// field, else the field. `None` when the app doesn't say.
+pub fn anchor() -> Option<Rect> {
+    imp::anchor().filter(|r| r.w >= 0.0 && r.h > 0.0)
+}
+
 impl Snapshot {
-    fn new(raw: String, whole: bool, field: imp::Field) -> Self {
+    fn new(raw: String, whole: bool, editable: Option<bool>, field: imp::Field) -> Self {
         let text = raw.replace("\r\n", "\n").replace('\r', "\n");
-        Snapshot { text, whole, raw, field }
+        Snapshot { text, whole, editable, raw, field }
     }
 
     /// Puts the answer where the text came from, unless the user changed it meanwhile.
@@ -61,7 +73,7 @@ impl Snapshot {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{Focused, Replaced, Snapshot};
+    use super::{Focused, Rect, Replaced, Snapshot};
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::string::{CFString, CFStringRef};
@@ -69,6 +81,9 @@ mod imp {
 
     type AxError = i32;
     const AX_SUCCESS: AxError = 0;
+    const AX_VALUE_CG_POINT: u32 = 1;
+    const AX_VALUE_CG_SIZE: u32 = 2;
+    const AX_VALUE_CG_RECT: u32 = 3;
     const AX_VALUE_CF_RANGE: u32 = 4;
     /// Seconds to wait for an app that has stopped answering.
     const TIMEOUT: f32 = 0.3;
@@ -76,10 +91,31 @@ mod imp {
     const MAX_DEPTH: usize = 40;
 
     #[repr(C)]
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy)]
     struct CfRange {
         location: isize,
         length: isize,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct CgPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct CgSize {
+        width: f64,
+        height: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Clone, Copy)]
+    struct CgRect {
+        origin: CgPoint,
+        size: CgSize,
     }
 
     #[link(name = "ApplicationServices", kind = "framework")]
@@ -101,6 +137,12 @@ mod imp {
             settable: *mut u8,
         ) -> AxError;
         fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> AxError;
+        fn AXUIElementCopyParameterizedAttributeValue(
+            element: CFTypeRef,
+            attribute: CFStringRef,
+            parameter: CFTypeRef,
+            value: *mut CFTypeRef,
+        ) -> AxError;
         fn AXValueCreate(kind: u32, value: *const c_void) -> CFTypeRef;
         fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> u8;
     }
@@ -148,16 +190,74 @@ mod imp {
         get(element, name)?.downcast::<CFString>().map(|s| s.to_string())
     }
 
-    fn has_range(element: &CFType, name: &'static str) -> bool {
-        let Some(value) = get(element, name) else { return false };
-        let mut range = CfRange::default();
-        unsafe {
-            AXValueGetValue(
-                value.as_CFTypeRef(),
+    /// Unpacks an AXValue holding a range, point, size or rect.
+    fn unpack<T: Default>(value: &CFType, kind: u32) -> Option<T> {
+        let mut out = T::default();
+        let ok = unsafe { AXValueGetValue(value.as_CFTypeRef(), kind, &mut out as *mut T as *mut c_void) };
+        (ok != 0).then_some(out)
+    }
+
+    fn range(element: &CFType, name: &'static str) -> Option<CfRange> {
+        unpack(&get(element, name)?, AX_VALUE_CF_RANGE)
+    }
+
+    fn frame(element: &CFType) -> Option<Rect> {
+        let origin: CgPoint = unpack(&get(element, "AXPosition")?, AX_VALUE_CG_POINT)?;
+        let size: CgSize = unpack(&get(element, "AXSize")?, AX_VALUE_CG_SIZE)?;
+        Some(Rect { x: origin.x, y: origin.y, w: size.width, h: size.height })
+    }
+
+    fn bounds_for(element: &CFType, range: CfRange) -> Option<Rect> {
+        let name = CFString::from_static_string("AXBoundsForRange");
+        let param = unsafe {
+            CFType::wrap_under_create_rule(AXValueCreate(
                 AX_VALUE_CF_RANGE,
-                &mut range as *mut CfRange as *mut c_void,
-            ) != 0
+                &range as *const CfRange as *const c_void,
+            ))
+        };
+        let mut value: CFTypeRef = ptr::null();
+        let error = unsafe {
+            AXUIElementCopyParameterizedAttributeValue(
+                element.as_CFTypeRef(),
+                name.as_concrete_TypeRef(),
+                param.as_CFTypeRef(),
+                &mut value,
+            )
+        };
+        if error != AX_SUCCESS || value.is_null() {
+            return None;
         }
+        let value = unsafe { CFType::wrap_under_create_rule(value) };
+        let rect: CgRect = unpack(&value, AX_VALUE_CG_RECT)?;
+        (rect.size.height > 0.0).then_some(Rect {
+            x: rect.origin.x,
+            y: rect.origin.y,
+            w: rect.size.width,
+            h: rect.size.height,
+        })
+    }
+
+    pub fn anchor() -> Option<Rect> {
+        let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
+        unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), TIMEOUT) };
+        let element = get(&system, "AXFocusedUIElement")?;
+        let field = frame(&element);
+        // A one- or few-line field is the place to stand under; in a large one the
+        // selection or the caret line is.
+        let large = field.map_or(true, |f| f.h > 120.0);
+        if let Some(selection) = range(&element, "AXSelectedTextRange") {
+            if selection.length > 0 {
+                if let Some(rect) = bounds_for(&element, selection) {
+                    return Some(rect);
+                }
+            } else if large {
+                let caret = CfRange { location: (selection.location - 1).max(0), length: 1 };
+                if let Some(rect) = bounds_for(&element, caret) {
+                    return Some(rect);
+                }
+            }
+        }
+        field.filter(|f| f.h <= 400.0)
     }
 
     fn in_web_page(element: &CFType) -> bool {
@@ -192,6 +292,9 @@ mod imp {
         "AXMenu",
         "AXMenuItem",
     ];
+
+    /// Text you read, not write: a web page, a label.
+    const READ_ONLY: &[&str] = &["AXWebArea", "AXStaticText"];
 
     /// Electron apps build their accessibility tree only when asked to, and a full
     /// tree slows them down. So the switch is flipped only when the app shows no
@@ -235,29 +338,41 @@ mod imp {
             }
         }
 
-        let Some(element) = element else { return Focused::Unknown { select_all: true } };
+        let Some(element) = element else { return Focused::Unknown { select_all: true, editable: None } };
         if string(&element, "AXSubrole").as_deref() == Some("AXSecureTextField") {
             return Focused::Password;
         }
         let role = string(&element, "AXRole");
-        let unknown =
-            Focused::Unknown { select_all: !role.as_deref().is_some_and(|r| NOT_TEXT.contains(&r)) };
+        let editable = if settable(&element, "AXValue") {
+            Some(true)
+        } else if role.as_deref().is_some_and(|r| READ_ONLY.contains(&r)) {
+            Some(false)
+        } else {
+            None
+        };
+        let unknown = Focused::Unknown {
+            select_all: !role.as_deref().is_some_and(|r| NOT_TEXT.contains(&r)),
+            editable,
+        };
         // Text you can edit has a selection range; buttons, lists and pages don't.
         let Some(value) = string(&element, "AXValue") else { return unknown };
-        if !has_range(&element, "AXSelectedTextRange") {
-            return unknown;
-        }
+        let Some(selection) = range(&element, "AXSelectedTextRange") else { return unknown };
 
         let selected = string(&element, "AXSelectedText").unwrap_or_default();
+        // Something is selected but the app won't hand it over: Cmd+C will, and
+        // the whole field must not be taken instead.
+        if selection.length > 0 && selected.is_empty() {
+            return unknown;
+        }
         if selected.is_empty() && !settable(&element, "AXValue") {
             return unknown;
         }
         let web = in_web_page(&element);
         let field = Field { element, web, _manual: manual };
         if selected.is_empty() {
-            Focused::Text(Snapshot::new(value, true, field))
+            Focused::Text(Snapshot::new(value, true, editable, field))
         } else {
-            Focused::Text(Snapshot::new(selected, false, field))
+            Focused::Text(Snapshot::new(selected, false, editable, field))
         }
     }
 
@@ -303,22 +418,22 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use super::{Focused, Replaced, Snapshot};
+    use super::{Focused, Rect, Replaced, Snapshot};
     use windows::core::Interface;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationElement, IUIAutomationTextPattern,
-        IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_CalendarControlTypeId,
-        UIA_CheckBoxControlTypeId, UIA_DataGridControlTypeId, UIA_DataItemControlTypeId,
-        UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId,
-        UIA_ImageControlTypeId, UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
-        UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId,
-        UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId, UIA_SliderControlTypeId,
-        UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId, UIA_TabControlTypeId,
-        UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId, UIA_TextPatternId,
-        UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeControlTypeId,
+        IUIAutomationTextRange, IUIAutomationValuePattern, TextUnit_Character, UIA_ButtonControlTypeId,
+        UIA_CalendarControlTypeId, UIA_CheckBoxControlTypeId, UIA_DataGridControlTypeId,
+        UIA_DataItemControlTypeId, UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId,
+        UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId, UIA_ListControlTypeId, UIA_ListItemControlTypeId,
+        UIA_MenuBarControlTypeId, UIA_MenuControlTypeId, UIA_MenuItemControlTypeId,
+        UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
+        UIA_SliderControlTypeId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+        UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
+        UIA_TextPatternId, UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeControlTypeId,
         UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID,
     };
 
@@ -351,22 +466,37 @@ mod imp {
 
     pub fn focused() -> Focused {
         let com = Com::init();
-        let Some(automation) = automation() else { return Focused::Unknown { select_all: true } };
+        let Some(automation) = automation() else {
+            return Focused::Unknown { select_all: true, editable: None };
+        };
         let Ok(element) = (unsafe { automation.GetFocusedElement() }) else {
-            return Focused::Unknown { select_all: true };
+            return Focused::Unknown { select_all: true, editable: None };
         };
         if unsafe { element.CurrentIsPassword() }.is_ok_and(|password| password.as_bool()) {
             return Focused::Password;
         }
 
         let selected = selection(&element);
+        let editable = editable(&element);
         let field = Field { element, _automation: automation, _com: com };
+        let unknown = |field: &Field| Focused::Unknown { select_all: may_be_text(&field.element), editable };
         match selected {
-            Some(text) if !text.is_empty() => Focused::Text(Snapshot::new(text, false, field)),
-            _ => match whole_text(&field.element) {
-                Some(text) => Focused::Text(Snapshot::new(text, true, field)),
-                None => Focused::Unknown { select_all: may_be_text(&field.element) },
+            Some(text) if !text.is_empty() => Focused::Text(Snapshot::new(text, false, editable, field)),
+            // No text pattern, so no telling whether part of it is selected. Taking the
+            // whole value could swallow a selection; Ctrl+C copies just what is selected.
+            None => unknown(&field),
+            Some(_) => match whole_text(&field.element) {
+                Some(text) => Focused::Text(Snapshot::new(text, true, editable, field)),
+                None => unknown(&field),
             },
+        }
+    }
+
+    /// What the value pattern says; a browser page says read-only (its value is the URL).
+    fn editable(element: &IUIAutomationElement) -> Option<bool> {
+        unsafe {
+            let value: IUIAutomationValuePattern = element.GetCurrentPatternAs(UIA_ValuePatternId).ok()?;
+            Some(!value.CurrentIsReadOnly().ok()?.as_bool())
         }
     }
 
@@ -466,6 +596,87 @@ mod imp {
         }
     }
 
+    pub fn anchor() -> Option<Rect> {
+        let _com = Com::init();
+        let automation = automation()?;
+        let element = unsafe { automation.GetFocusedElement() }.ok()?;
+        let field = unsafe { element.CurrentBoundingRectangle() }.ok().map(|r| Rect {
+            x: r.left as f64,
+            y: r.top as f64,
+            w: (r.right - r.left) as f64,
+            h: (r.bottom - r.top) as f64,
+        });
+        // A one- or few-line field is the place to stand under; in a large one the
+        // selection or the caret line is.
+        let large = field.map_or(true, |f| f.h > 180.0);
+        if let Some(rect) = text_bounds(&element, large) {
+            return Some(rect);
+        }
+        field.filter(|f| f.w > 0.0 && f.h <= 600.0)
+    }
+
+    /// The selected text on screen; with `caret`, the character at the caret when nothing is selected.
+    fn text_bounds(element: &IUIAutomationElement, caret: bool) -> Option<Rect> {
+        unsafe {
+            let pattern: IUIAutomationTextPattern = element.GetCurrentPatternAs(UIA_TextPatternId).ok()?;
+            let ranges = pattern.GetSelection().ok()?;
+            if ranges.Length().ok()? < 1 {
+                return None;
+            }
+            let range = ranges.GetElement(0).ok()?;
+            if range.GetText(1).ok()?.is_empty() {
+                if !caret {
+                    return None;
+                }
+                range.ExpandToEnclosingUnit(TextUnit_Character).ok()?;
+            }
+            bounding(&range)
+        }
+    }
+
+    /// One rectangle around all lines of a range. UI Automation gives them as a
+    /// flat array of doubles: left, top, width, height for each line.
+    fn bounding(range: &IUIAutomationTextRange) -> Option<Rect> {
+        use windows::Win32::System::Ole::{
+            SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
+            SafeArrayUnaccessData,
+        };
+        unsafe {
+            let array = range.GetBoundingRectangles().ok()?;
+            if array.is_null() {
+                return None;
+            }
+            let count = match (SafeArrayGetLBound(array, 1), SafeArrayGetUBound(array, 1)) {
+                (Ok(low), Ok(high)) if high >= low => (high - low + 1) as usize,
+                _ => 0,
+            };
+            let mut data = std::ptr::null_mut();
+            let mut rect: Option<Rect> = None;
+            if count >= 4 && SafeArrayAccessData(array, &mut data).is_ok() {
+                let values = std::slice::from_raw_parts(data as *const f64, count);
+                for line in values.chunks_exact(4) {
+                    let (x, y, w, h) = (line[0], line[1], line[2], line[3]);
+                    if h <= 0.0 {
+                        continue;
+                    }
+                    rect = Some(match rect {
+                        None => Rect { x, y, w, h },
+                        Some(r) => {
+                            let left = r.x.min(x);
+                            let top = r.y.min(y);
+                            let right = (r.x + r.w).max(x + w);
+                            let bottom = (r.y + r.h).max(y + h);
+                            Rect { x: left, y: top, w: right - left, h: bottom - top }
+                        }
+                    });
+                }
+                let _ = SafeArrayUnaccessData(array);
+            }
+            let _ = SafeArrayDestroy(array);
+            rect
+        }
+    }
+
     /// UI Automation can only overwrite a whole value, which skips the app's undo and
     /// its own input handling. Ctrl+V keeps both, so writing always goes that way.
     pub fn replace(_field: &Field, _whole: bool, _answer: &str) -> Replaced {
@@ -475,12 +686,16 @@ mod imp {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
-    use super::{Focused, Replaced};
+    use super::{Focused, Rect, Replaced};
 
     pub struct Field;
 
+    pub fn anchor() -> Option<Rect> {
+        None
+    }
+
     pub fn focused() -> Focused {
-        Focused::Unknown { select_all: true }
+        Focused::Unknown { select_all: true, editable: None }
     }
 
     pub fn current(_field: &Field, _whole: bool) -> Option<String> {
