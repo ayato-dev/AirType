@@ -104,6 +104,25 @@ button {
   display: none;
 }
 
+/* Linux has no system glass to stand on: the window is solid, square and edgeless. */
+[data-platform="linux"] {
+  --ground: #f1f2f0;
+}
+
+[data-platform="linux"] .window {
+  border-radius: 0;
+}
+
+[data-platform="linux"] .window::before {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-platform="linux"] {
+    --ground: #1b1b1c;
+  }
+}
+
 /* Grain keeps the large translucent field from banding. */
 .window::after {
   content: "";

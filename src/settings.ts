@@ -42,6 +42,7 @@ interface UiState {
   keys: Record<Provider, boolean>;
   hotkeyErrors: HotkeyError[];
   platform: string;
+  wayland: boolean;
   accessibility: boolean;
   autostart: boolean;
   version: string;
@@ -252,6 +253,12 @@ function currentNotes(): Note[] {
           el.apiKey.focus();
         },
       },
+    });
+  }
+  if (ui.wayland) {
+    notes.push({
+      text: "Это сессия Wayland, и сочетания тут сработают только в X11-приложениях. Для остальных выбери Xorg на экране входа.",
+      flag: "только в X11-приложениях",
     });
   }
   if (ui.platform === "macos" && !ui.accessibility && view !== "general") {

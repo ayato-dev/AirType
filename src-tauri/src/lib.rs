@@ -29,6 +29,14 @@ pub fn run() {
             let needs_setup = settings.requires_key() && config::api_key(settings.provider).is_none();
             app.manage(AppState::new(settings, settings_path));
 
+            // X11 serves the clipboard from the process that filled it, and arboard stops
+            // serving when its last instance is dropped. Keep one alive so the text put
+            // back after a paste outlives the run.
+            #[cfg(target_os = "linux")]
+            if let Ok(clipboard) = arboard::Clipboard::new() {
+                std::mem::forget(clipboard);
+            }
+
             let handle = app.handle();
             tray::create(handle)?;
             hotkeys::apply(handle);

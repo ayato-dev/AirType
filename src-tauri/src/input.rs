@@ -15,7 +15,7 @@ pub enum Chord {
     SelectAll,
 }
 
-pub use imp::{accessibility_granted, foreground, restore_focus, SUPPORTED};
+pub use imp::{accessibility_granted, foreground, restore_focus, wayland, SUPPORTED};
 
 /// The hotkey's own modifiers are still held when it fires; pressing Ctrl+C on top
 /// of them would send e.g. Ctrl+Alt+C, so wait until the user lets go.
@@ -98,6 +98,10 @@ mod imp {
     pub fn accessibility_granted(_prompt: bool) -> bool {
         true
     }
+
+    pub fn wayland() -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -167,9 +171,121 @@ mod imp {
         let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
         unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
     }
+
+    pub fn wayland() -> bool {
+        false
+    }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// X11 only: XTest presses the keys. Wayland lets no app grab global hotkeys or
+/// type into other windows, so there it works just for apps running under XWayland.
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::Chord;
+    use std::cell::OnceCell;
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        ConnectionExt as _, KeyButMask, Keycode, Keysym, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+    };
+    use x11rb::protocol::xtest::ConnectionExt as _;
+    use x11rb::rust_connection::RustConnection;
+
+    pub const SUPPORTED: bool = true;
+
+    /// The hotkey's window keeps focus on X11; nothing to remember.
+    pub struct Target;
+
+    const XK_A: Keysym = 0x61;
+    const XK_C: Keysym = 0x63;
+    const XK_V: Keysym = 0x76;
+    const XK_CONTROL_L: Keysym = 0xffe3;
+
+    struct Display {
+        conn: RustConnection,
+        root: u32,
+    }
+
+    thread_local! {
+        // One connection per engine run; each run has its own thread.
+        static DISPLAY: OnceCell<Option<Display>> = const { OnceCell::new() };
+    }
+
+    fn with_display(f: impl FnOnce(&Display)) {
+        DISPLAY.with(|cell| {
+            let display = cell.get_or_init(|| {
+                let (conn, screen) = x11rb::connect(None).ok()?;
+                let root = conn.setup().roots.get(screen)?.root;
+                Some(Display { conn, root })
+            });
+            if let Some(display) = display {
+                f(display);
+            }
+        });
+    }
+
+    /// Finds the key that carries `keysym` in any layout group, so Ctrl+C is
+    /// the same physical key with a Russian layout active.
+    fn keycode(conn: &RustConnection, keysym: Keysym) -> Option<Keycode> {
+        let setup = conn.setup();
+        let (min, max) = (setup.min_keycode, setup.max_keycode);
+        let map = conn.get_keyboard_mapping(min, max - min + 1).ok()?.reply().ok()?;
+        let per_key = usize::from(map.keysyms_per_keycode).max(1);
+        let index = map.keysyms.chunks(per_key).position(|syms| syms.contains(&keysym))?;
+        Some(min + index as Keycode)
+    }
+
+    pub fn modifiers_down() -> bool {
+        let held = KeyButMask::SHIFT | KeyButMask::CONTROL | KeyButMask::MOD1 | KeyButMask::MOD4;
+        let mut down = false;
+        with_display(|d| {
+            if let Ok(Ok(reply)) = d.conn.query_pointer(d.root).map(|cookie| cookie.reply()) {
+                down = u16::from(reply.mask) & u16::from(held) != 0;
+            }
+        });
+        down
+    }
+
+    pub fn send(chord: Chord) {
+        let keysym = match chord {
+            Chord::Copy => XK_C,
+            Chord::Paste => XK_V,
+            Chord::SelectAll => XK_A,
+        };
+        with_display(|d| {
+            let (Some(ctrl), Some(key)) = (keycode(&d.conn, XK_CONTROL_L), keycode(&d.conn, keysym)) else {
+                return;
+            };
+            let presses = [
+                (KEY_PRESS_EVENT, ctrl),
+                (KEY_PRESS_EVENT, key),
+                (KEY_RELEASE_EVENT, key),
+                (KEY_RELEASE_EVENT, ctrl),
+            ];
+            for (kind, code) in presses {
+                let _ = d.conn.xtest_fake_input(kind, code, x11rb::CURRENT_TIME, d.root, 0, 0, 0);
+            }
+            // A round trip makes sure the server has taken the keys before we go on.
+            let _ = d.conn.get_input_focus().map(|cookie| cookie.reply());
+        });
+    }
+
+    pub fn foreground() -> Target {
+        Target
+    }
+
+    pub fn restore_focus(_target: Target) {}
+
+    pub fn accessibility_granted(_prompt: bool) -> bool {
+        true
+    }
+
+    pub fn wayland() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland")
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod imp {
     use super::Chord;
 
@@ -186,5 +302,8 @@ mod imp {
     pub fn restore_focus(_target: Target) {}
     pub fn accessibility_granted(_prompt: bool) -> bool {
         true
+    }
+    pub fn wayland() -> bool {
+        false
     }
 }

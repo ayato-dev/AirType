@@ -23,6 +23,8 @@ pub struct UiState {
     keys: KeyStatus,
     hotkey_errors: Vec<HotkeyError>,
     platform: &'static str,
+    /// Linux under Wayland, where hotkeys reach only X11 apps.
+    wayland: bool,
     accessibility: bool,
     autostart: bool,
     version: String,
@@ -38,6 +40,7 @@ pub fn get_state(app: AppHandle, state: State<'_, AppState>) -> UiState {
         },
         hotkey_errors: state.hotkey_errors.lock().unwrap().clone(),
         platform: std::env::consts::OS,
+        wayland: input::wayland(),
         accessibility: input::accessibility_granted(false),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         version: app.package_info().version.to_string(),
