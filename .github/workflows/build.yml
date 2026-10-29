@@ -23,7 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest (macOS 26) often waits a long time for a runner; macos-15
+        # has its own pool and builds the same universal app.
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +63,7 @@ jobs:
           - os: windows-latest
             name: windows
             args: ""
-          - os: macos-latest
+          - os: macos-15
             name: macos
             args: --target universal-apple-darwin
           # The oldest supported Ubuntu, so the AppImage runs on older glibc too.
