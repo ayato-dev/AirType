@@ -63,8 +63,8 @@ fn run(app: &AppHandle, action_id: &str) -> Result<Ran, String> {
     if settings.show_hud {
         hud::working(app, &action.id, &action.name);
     }
-    let system = llm::system_prompt(&settings, &action);
-    let output = llm::answer(app, &settings, &system, &llm::wrap_text(&source.text))?;
+    let prompt = llm::action_prompt(&settings, &action, &source.text);
+    let output = llm::transform_text(app, &settings, &prompt)?;
 
     if source.editable == Some(false) {
         panel::show_answer(app, source.text, output, None, cx.anchor, cx.target);

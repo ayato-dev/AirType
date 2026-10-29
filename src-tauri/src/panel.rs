@@ -260,12 +260,12 @@ pub struct Ask {
 pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
     let text = JOB.lock().unwrap().as_ref().map(|job| job.view.text.clone()).ok_or("Панель уже закрыта")?;
     let settings = app.state::<AppState>().settings();
-    let (system, user) = match ask.action.as_str() {
+    let prompt = match ask.action.as_str() {
         "compose" => {
             if ask.request.trim().is_empty() {
                 return Err("Напиши, что нужно".into());
             }
-            (llm::compose_prompt(&ask.lang, &ask.tone), llm::wrap_request(ask.request.trim()))
+            llm::compose(&ask.lang, &ask.tone, ask.request.trim())
         }
         id => {
             let (target, secondary) = languages(&ask.lang, &settings.target_lang, &settings.secondary_lang);
@@ -278,10 +278,10 @@ pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
                     settings.actions.iter().find(|a| a.id == id).ok_or("Действие не найдено")?.prompt.clone()
                 }
             };
-            (llm::instruction_prompt(&prompt, &target, &secondary), llm::wrap_text(&text))
+            llm::transform(&prompt, &target, &secondary, &text)
         }
     };
-    tauri::async_runtime::spawn_blocking(move || llm::answer(&app, &settings, &system, &user))
+    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
         .await
         .map_err(|e| e.to_string())?
 }

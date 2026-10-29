@@ -82,13 +82,11 @@ pub async fn set_api_key(provider: Provider, key: String) -> Result<(), String> 
 pub async fn test_connection(app: AppHandle, text: String) -> Result<String, String> {
     let settings = app.state::<AppState>().settings();
     let action = settings.actions.first().ok_or("Нет ни одного действия")?;
-    let system = llm::system_prompt(&settings, action);
+    let prompt = llm::action_prompt(&settings, action, &text);
     // Reads the keychain and may start the local model: off the async workers.
-    tauri::async_runtime::spawn_blocking(move || {
-        llm::answer(&app, &settings, &system, &llm::wrap_text(&text))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Turns global hotkeys off while the settings window records a new combination.
