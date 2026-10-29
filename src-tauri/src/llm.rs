@@ -49,7 +49,7 @@ pub async fn complete(
     };
     let cleaned = clean(&raw);
     if cleaned.is_empty() {
-        return Err("нейронка вернула пустой ответ".into());
+        return Err("Нейронка вернула пустой ответ".into());
     }
     Ok(cleaned)
 }
@@ -61,7 +61,7 @@ async fn anthropic(
     system: &str,
     user: &str,
 ) -> Result<String, String> {
-    let key = api_key.ok_or("нет api ключа claude")?;
+    let key = api_key.ok_or("Нет ключа API для Claude")?;
     let cfg = &settings.anthropic;
     let custom_url = !cfg.base_url.trim().is_empty();
     let base = if custom_url { cfg.base_url.trim().trim_end_matches('/') } else { ANTHROPIC_URL };
@@ -88,7 +88,7 @@ async fn anthropic(
 
     let response = send(request.json(&body)).await?;
     if response["stop_reason"] == "refusal" {
-        return Err("модель отказалась работать с этим текстом".into());
+        return Err("Модель отказалась работать с этим текстом".into());
     }
     let text = response["content"]
         .as_array()
@@ -112,7 +112,7 @@ async fn openai(
 ) -> Result<String, String> {
     let cfg = &settings.openai;
     if cfg.model.trim().is_empty() {
-        return Err("укажи модель в настройках".into());
+        return Err("Укажи модель в настройках".into());
     }
     let base = match cfg.base_url.trim() {
         "" => OPENAI_URL,
@@ -136,27 +136,27 @@ async fn openai(
 async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
     let response = request.send().await.map_err(|e| {
         if e.is_timeout() {
-            "нейронка не ответила вовремя".to_string()
+            "Нейронка не ответила вовремя".to_string()
         } else if e.is_connect() {
-            "не достучался до апи. нужен интернет, а из некоторых стран ещё и vpn или прокси".to_string()
+            "Не достучался до API. Нужен интернет, а из некоторых стран ещё VPN или прокси".to_string()
         } else {
-            format!("ошибка сети: {e}")
+            format!("Ошибка сети: {e}")
         }
     })?;
     let status = response.status();
-    let raw = response.text().await.map_err(|e| format!("ошибка сети: {e}"))?;
+    let raw = response.text().await.map_err(|e| format!("Ошибка сети: {e}"))?;
     let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     if status.is_success() {
         return Ok(body);
     }
     let detail = body["error"]["message"].as_str().unwrap_or(raw.trim());
     Err(match status.as_u16() {
-        401 => "api ключ не подходит".to_string(),
-        403 => format!("доступ запрещён: {detail}"),
-        404 => format!("нет такой модели или адреса: {detail}"),
-        429 => "упёрся в лимит запросов, подожди немного".to_string(),
-        529 | 503 => "нейронка перегружена, попробуй ещё раз".to_string(),
-        code => format!("ошибка апи {code}: {detail}"),
+        401 => "Ключ API не подходит".to_string(),
+        403 => format!("Доступ запрещён: {detail}"),
+        404 => format!("Нет такой модели или адреса: {detail}"),
+        429 => "Упёрся в лимит запросов, подожди немного".to_string(),
+        529 | 503 => "Нейронка перегружена, попробуй ещё раз".to_string(),
+        code => format!("Ошибка API {code}: {detail}"),
     })
 }
 

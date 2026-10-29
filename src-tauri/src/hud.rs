@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 enum HudEvent<'a> {
-    Working { label: &'a str },
+    Working { action: &'a str, label: &'a str },
     Done,
     Error { message: &'a str },
 }
@@ -24,9 +24,9 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("hud")
 }
 
-pub fn working(app: &AppHandle, label: &str) {
+pub fn working(app: &AppHandle, action: &str, label: &str) {
     show(app);
-    let _ = app.emit_to("hud", "hud", HudEvent::Working { label });
+    let _ = app.emit_to("hud", "hud", HudEvent::Working { action, label });
 }
 
 pub fn done(app: &AppHandle) {

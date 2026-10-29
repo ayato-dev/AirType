@@ -56,22 +56,15 @@ pub fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
 
 /// Runs the first action on a sample phrase so the user can check key and model.
 #[tauri::command]
-pub async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn test_connection(state: State<'_, AppState>, text: String) -> Result<String, String> {
     let settings = state.settings();
-    let action = settings.actions.first().ok_or("нет ни одного действия")?;
+    let action = settings.actions.first().ok_or("Нет ни одного действия")?;
     let api_key = config::api_key(settings.provider);
     if api_key.is_none() && settings.requires_key() {
-        return Err("сначала вставь api ключ".into());
+        return Err("Сначала вставь ключ API".into());
     }
     let system = llm::system_prompt(&settings, action);
-    llm::complete(
-        &state.http,
-        &settings,
-        api_key.as_deref(),
-        &system,
-        "Привет! Как дела? Скинь, пожалуйста, файл, когда будет минутка.",
-    )
-    .await
+    llm::complete(&state.http, &settings, api_key.as_deref(), &system, &text).await
 }
 
 /// Turns global hotkeys off while the settings window records a new combination.

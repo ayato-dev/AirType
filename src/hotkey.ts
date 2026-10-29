@@ -47,6 +47,11 @@ function keyLabel(code: string): string {
   return KEY_NAMES[code] ?? code;
 }
 
+/** One-line label for an accelerator: "⌘⌥T" on a Mac, "Ctrl+Alt+T" elsewhere. */
+export function hotkeyLabel(accelerator: string): string {
+  return hotkeyParts(accelerator).join(isMac ? "" : "+");
+}
+
 /** Keycap labels for an accelerator, in display order. */
 export function hotkeyParts(accelerator: string): string[] {
   if (!accelerator) return [];

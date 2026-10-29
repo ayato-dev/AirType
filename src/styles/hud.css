@@ -4,10 +4,9 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: transparent;
   overflow: hidden;
-  font: 13.5px/1.35 var(--font);
-  color: var(--text);
+  background: transparent;
+  font: 500 var(--fs-body) / 20px var(--font);
   -webkit-font-smoothing: antialiased;
   user-select: none;
   cursor: default;
@@ -17,65 +16,69 @@ body {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 0 10px 18px;
+  padding: 0 12px 18px;
   box-sizing: border-box;
 }
 
+/* Always dark, like a system HUD: it has to read over any app. */
 .pill {
-  --tint: var(--accent);
+  --tint: #ffffff;
   display: flex;
   align-items: center;
   gap: 10px;
   max-width: 100%;
-  min-height: 44px;
-  padding: 8px 18px 8px 10px;
+  min-height: 40px;
+  padding: 8px 18px 8px 12px;
   border-radius: 999px;
-  background: var(--hud-surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--inner-highlight), 0 10px 28px -10px rgba(50, 40, 120, 0.4), 0 0 0 0.5px rgba(20, 20, 40, 0.06);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
-  transition: background 0.3s;
+  background: rgba(22, 22, 24, 0.94);
+  color: #f5f5f5;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 0 0 0.5px rgba(0, 0, 0, 0.5),
+    0 10px 24px -8px rgba(0, 0, 0, 0.45);
 }
 
 .pill.enter {
-  animation: rise 0.42s cubic-bezier(0.2, 1.3, 0.4, 1);
+  animation: enter var(--base) var(--ease);
 }
 
 .pill[data-state="done"] {
-  --tint: var(--success);
+  --tint: #6fdc9c;
 }
 
 .pill[data-state="error"] {
-  --tint: var(--danger);
-  border-radius: 18px;
+  --tint: #ff8f8f;
+  border-radius: 20px;
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
 .pill-icon {
-  position: relative;
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 18px;
+  height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--tint) 14%, transparent);
-  transition: background 0.3s;
 }
 
 .pill-icon > * {
   grid-area: 1 / 1;
-  transition: opacity 0.2s, transform 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--fast) var(--ease),
+    transform var(--base) var(--ease);
 }
 
 .spinner {
   width: 16px;
   height: 16px;
+  box-sizing: border-box;
   border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 25%, #7cc4ff, #9b8cff, #ff9fd0);
-  -webkit-mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  mask: radial-gradient(circle, transparent 5px, #000 5.5px);
-  animation: spin 0.9s linear infinite;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #ffffff;
+  animation: spin 0.8s linear infinite;
 }
 
 .pill-icon svg {
@@ -83,22 +86,12 @@ body {
   height: 18px;
   fill: none;
   stroke: var(--tint);
-  stroke-width: 2.2;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0;
-  transform: scale(0.4);
 }
 
-.pill[data-state="working"] .spinner {
-  opacity: 1;
-}
-
-.pill:not([data-state="working"]) .spinner {
-  opacity: 0;
-  transform: scale(0.4);
-}
-
+.pill[data-state="working"] .spinner,
 .pill[data-state="done"] .check,
 .pill[data-state="error"] .warn {
   opacity: 1;
@@ -106,7 +99,6 @@ body {
 }
 
 .pill-text {
-  font-weight: 600;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -114,18 +106,9 @@ body {
 }
 
 .pill[data-state="error"] .pill-text {
-  font-weight: 500;
-  font-size: 12.5px;
-}
-
-:root {
-  --hud-surface: rgba(255, 255, 255, 0.86);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --hud-surface: rgba(30, 32, 44, 0.88);
-  }
+  font-size: var(--fs-meta);
+  line-height: 18px;
+  font-weight: 400;
 }
 
 @keyframes spin {
@@ -134,9 +117,19 @@ body {
   }
 }
 
-@keyframes rise {
+@keyframes enter {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.94);
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill.enter {
+    animation: none;
+  }
+
+  .spinner {
+    animation-duration: 2.4s;
   }
 }

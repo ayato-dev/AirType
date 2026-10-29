@@ -36,34 +36,34 @@ pub fn trigger(app: &AppHandle, action_id: &str) {
 
 fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
     if !input::SUPPORTED {
-        return Err("эта система пока не поддерживается".into());
+        return Err("Эта система пока не поддерживается".into());
     }
     let state = app.state::<AppState>();
     let settings = state.settings();
-    let action = settings.actions.iter().find(|a| a.id == action_id).cloned().ok_or("действие не найдено")?;
+    let action = settings.actions.iter().find(|a| a.id == action_id).cloned().ok_or("Действие не найдено")?;
 
     let api_key = config::api_key(settings.provider);
     if api_key.is_none() && settings.requires_key() {
         tray::show_settings(app);
-        return Err("сначала добавь api ключ в настройках".into());
+        return Err("Сначала добавь ключ API в настройках".into());
     }
     if !input::accessibility_granted(false) {
         input::accessibility_granted(true);
-        return Err("дай airtype доступ в «универсальном доступе»".into());
+        return Err("Дай Airtype «Универсальный доступ» в настройках macOS".into());
     }
 
     input::wait_modifiers_released(Duration::from_millis(1500));
     let target = input::foreground();
-    let mut clipboard = Clipboard::new().map_err(|e| format!("буфер обмена недоступен: {e}"))?;
+    let mut clipboard = Clipboard::new().map_err(|e| format!("Буфер обмена недоступен: {e}"))?;
     let saved = clipboard.get_text().ok();
 
     let Some(text) = grab_text(&mut clipboard) else {
         restore(&mut clipboard, saved);
-        return Err("не нашёл текст: выдели его или поставь курсор в поле".into());
+        return Err("Не нашёл текст. Выдели его или поставь курсор в поле".into());
     };
 
     if settings.show_hud {
-        hud::working(app, &action.name);
+        hud::working(app, &action.id, &action.name);
     }
     let system = llm::system_prompt(&settings, &action);
     let result = tauri::async_runtime::block_on(llm::complete(
@@ -82,7 +82,7 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
     };
 
     input::restore_focus(target);
-    set_private(&mut clipboard, output).map_err(|e| format!("не смог положить текст в буфер: {e}"))?;
+    set_private(&mut clipboard, output).map_err(|e| format!("Не смог положить текст в буфер обмена: {e}"))?;
     thread::sleep(Duration::from_millis(40));
     input::press(Chord::Paste);
     // Apps read the clipboard a moment after Ctrl+V, so don't swap it back too early.

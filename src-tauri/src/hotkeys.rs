@@ -44,19 +44,19 @@ pub fn apply(app: &AppHandle) {
             let shortcut: Shortcut = match action.hotkey.parse() {
                 Ok(shortcut) => shortcut,
                 Err(_) => {
-                    errors.push(error("не понял это сочетание"));
+                    errors.push(error("Не понял это сочетание"));
                     continue;
                 }
             };
             if map.contains_key(&shortcut.id()) {
-                errors.push(error("это сочетание уже у другого действия"));
+                errors.push(error("Это сочетание уже у другого действия"));
                 continue;
             }
             match shortcuts.register(shortcut) {
                 Ok(()) => {
                     map.insert(shortcut.id(), action.id.clone());
                 }
-                Err(_) => errors.push(error("сочетание занято другой программой")),
+                Err(_) => errors.push(error("Сочетание занято другой программой")),
             }
         }
     }

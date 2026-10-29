@@ -1,0 +1,47 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Airtype",
+        "url": "index.html",
+        "width": 460,
+        "height": 700,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": true,
+        "transparent": true,
+        "visible": false,
+        "center": true,
+        "shadow": true,
+        "windowEffects": {
+          "effects": [
+            "liquidGlassRegular",
+            "sidebar"
+          ],
+          "state": "active"
+        },
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": false,
+        "minimizable": false
+      },
+      {
+        "label": "hud",
+        "title": "Airtype HUD",
+        "url": "hud.html",
+        "width": 380,
+        "height": 96,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true
+      }
+    ]
+  }
+}

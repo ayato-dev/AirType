@@ -1,84 +1,136 @@
+@font-face {
+  font-family: "Onest";
+  src: url("../assets/fonts/onest-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: block;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Onest";
+  src: url("../assets/fonts/onest-cyrillic-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: block;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
 :root {
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --font: "Onest", -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  /* Keycap symbols (⌘ ⌥ ⇧ ⌃) are not in Onest; the system face draws them. */
+  --font-keys: -apple-system, "Segoe UI Variable Text", "Segoe UI", "Onest", sans-serif;
 
-  --radius-window: 18px;
-  --radius-card: 16px;
-  --radius-field: 10px;
+  --fs-small: 12px;
+  --fs-meta: 13px;
+  --fs-body: 14px;
+  --fs-lead: 17px;
 
-  --sky: #8fd0ff;
-  --lilac: #b5a6ff;
-  --rose: #ffb3dc;
-  --accent: #7a68f5;
-  --accent-gradient: linear-gradient(135deg, #7cc4ff 0%, #9b8cff 52%, #ff9fd0 100%);
-  --button-gradient: linear-gradient(135deg, #4f9df5 0%, #7563f0 55%, #d965a8 100%);
-  --accent-soft: rgba(122, 104, 245, 0.12);
-  --focus-ring: rgba(122, 104, 245, 0.2);
+  --radius-window: 12px;
+  --radius-group: 18px;
+  --radius-field: 12px;
+  --pill: 999px;
+  --control: 36px;
 
-  --success: #22a06b;
-  --warning: #e8a317;
-  --danger: #e5484d;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 150ms;
+  --base: 220ms;
 
-  --text: #1b2030;
-  --muted: rgba(27, 32, 48, 0.58);
-  --faint: rgba(27, 32, 48, 0.38);
+  /* light */
+  --ground: rgba(246, 246, 245, 0.74);
+  --surface: rgba(255, 255, 255, 0.8);
+  --surface-hover: rgba(255, 255, 255, 0.95);
+  --sunken: rgba(20, 20, 20, 0.045);
+  --field: #ffffff;
+  --field-border: rgba(20, 20, 20, 0.13);
+  --field-border-hover: rgba(20, 20, 20, 0.24);
+  --rule: rgba(20, 20, 20, 0.07);
 
-  --window-tint: rgba(246, 247, 253, 0.62);
-  --window-rim: rgba(255, 255, 255, 0.55);
-  --surface: rgba(255, 255, 255, 0.5);
-  --surface-strong: rgba(255, 255, 255, 0.82);
-  --surface-solid: rgba(252, 252, 255, 0.94);
-  --border: rgba(255, 255, 255, 0.75);
-  --border-strong: rgba(27, 32, 48, 0.16);
-  --divider: rgba(27, 32, 48, 0.07);
-  --track: rgba(27, 32, 48, 0.07);
-  --field: rgba(255, 255, 255, 0.6);
-  --field-focus: rgba(255, 255, 255, 0.92);
-  --field-border: rgba(27, 32, 48, 0.09);
+  --text: #151515;
+  --muted: #5d5d5d;
+  --faint: #6b6b6b;
 
-  --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  --card-shadow: 0 10px 30px -18px rgba(70, 55, 160, 0.35);
-  --orb-opacity: 0.45;
-  --grain-opacity: 0.05;
+  --primary: #161616;
+  --primary-hover: #2e2e2e;
+  --primary-ink: #ffffff;
+  --toggle-on: #161616;
+  --toggle-knob: #ffffff;
+
+  --accent: #1765dd;
+  --accent-ink: #ffffff;
+  --mark: #cfe0ff;
+  --focus: rgba(23, 101, 221, 0.4);
+
+  --positive: #247b50;
+  --negative: #c4242a;
+  --notice-bg: #fff8e6;
+  --notice-border: #f2d58a;
+  --notice-ink: #6f4300;
+
+  --edge-top: rgba(255, 255, 255, 0.95);
+  --edge-bottom: rgba(255, 255, 255, 0.35);
+  --grain: 0.035;
+  --key-face: #ffffff;
+  --key-edge: rgba(20, 20, 20, 0.16);
+  --radio-gap: #ffffff;
 
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --sky: #2f6fb8;
-    --lilac: #5a48c9;
-    --rose: #a8457f;
-    --accent: #a497ff;
-    --accent-soft: rgba(164, 151, 255, 0.16);
-    --focus-ring: rgba(164, 151, 255, 0.26);
+    --ground: rgba(28, 28, 30, 0.62);
+    --surface: rgba(255, 255, 255, 0.07);
+    --surface-hover: rgba(255, 255, 255, 0.1);
+    --sunken: rgba(0, 0, 0, 0.22);
+    --field: rgba(0, 0, 0, 0.28);
+    --field-border: rgba(255, 255, 255, 0.13);
+    --field-border-hover: rgba(255, 255, 255, 0.24);
+    --rule: rgba(255, 255, 255, 0.07);
 
-    --success: #3dd68c;
-    --warning: #f5c24c;
-    --danger: #ff6b6f;
+    --text: #f3f3f3;
+    --muted: #ababab;
+    --faint: #949494;
 
-    --text: #eef0f8;
-    --muted: rgba(238, 240, 248, 0.6);
-    --faint: rgba(238, 240, 248, 0.38);
+    --primary: #f3f3f3;
+    --primary-hover: #ffffff;
+    --primary-ink: #141414;
+    --toggle-on: #f3f3f3;
+    --toggle-knob: #1c1c1e;
 
-    --window-tint: rgba(22, 24, 34, 0.6);
-    --window-rim: rgba(255, 255, 255, 0.1);
-    --surface: rgba(255, 255, 255, 0.06);
-    --surface-strong: rgba(255, 255, 255, 0.13);
-    --surface-solid: rgba(36, 38, 50, 0.95);
-    --border: rgba(255, 255, 255, 0.1);
-    --border-strong: rgba(255, 255, 255, 0.18);
-    --divider: rgba(255, 255, 255, 0.07);
-    --track: rgba(255, 255, 255, 0.08);
-    --field: rgba(0, 0, 0, 0.18);
-    --field-focus: rgba(0, 0, 0, 0.28);
-    --field-border: rgba(255, 255, 255, 0.08);
+    --accent: #6aa8ff;
+    --accent-ink: #0b1a33;
+    --mark: rgba(80, 145, 255, 0.34);
+    --focus: rgba(106, 168, 255, 0.5);
 
-    --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    --card-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.6);
-    --orb-opacity: 0.35;
-    --grain-opacity: 0.06;
+    --positive: #4cc38a;
+    --negative: #ff7b7b;
+    --notice-bg: rgba(255, 196, 61, 0.1);
+    --notice-border: rgba(255, 196, 61, 0.28);
+    --notice-ink: #f5cf7a;
+
+    --edge-top: rgba(255, 255, 255, 0.24);
+    --edge-bottom: rgba(255, 255, 255, 0.06);
+    --grain: 0.05;
+    --key-face: rgba(255, 255, 255, 0.1);
+    --key-edge: rgba(0, 0, 0, 0.5);
+    --radio-gap: #232325;
 
     color-scheme: dark;
+  }
+}
+
+/* No see-through when the system asks for less transparency. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --ground: #f3f3f2;
+    --surface: #ffffff;
+    --grain: 0;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root {
+    --ground: #1c1c1e;
+    --surface: #262628;
   }
 }

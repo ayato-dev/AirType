@@ -6,11 +6,11 @@
     <link rel="stylesheet" href="/src/styles/hud.css" />
   </head>
   <body>
-    <div class="pill" id="pill" data-state="working">
+    <div class="pill" id="pill" data-state="working" role="status" aria-live="polite">
       <span class="pill-icon" aria-hidden="true">
         <span class="spinner"></span>
-        <svg class="check" viewBox="0 0 20 20"><path d="M5 10.5l3.2 3.2L15 7" /></svg>
-        <svg class="warn" viewBox="0 0 20 20"><path d="M10 5.5v5.5M10 14.2v.3" /></svg>
+        <svg class="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></svg>
+        <svg class="warn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5" /><path d="M12 7.5v5M12 16.2v.1" /></svg>
       </span>
       <span class="pill-text" id="text"></span>
     </div>

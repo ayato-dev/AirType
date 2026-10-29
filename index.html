@@ -7,139 +7,214 @@
     <link rel="stylesheet" href="/src/styles/settings.css" />
   </head>
   <body>
-    <div class="app">
-      <div class="ambient" aria-hidden="true">
-        <span class="orb orb-a"></span>
-        <span class="orb orb-b"></span>
-        <span class="orb orb-c"></span>
-      </div>
+    <svg width="0" height="0" aria-hidden="true" style="position: absolute">
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24">
+        <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" />
+        <circle cx="12" cy="12" r="3" />
+      </symbol>
+      <symbol id="i-eye-off" viewBox="0 0 24 24">
+        <path d="M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49" />
+        <path d="M14.08 14.16a3 3 0 0 1-4.24-4.24" />
+        <path d="M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14M2 2l20 20" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+      </symbol>
+    </svg>
 
+    <div class="window">
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region>
-          <span class="logo" aria-hidden="true">
-            <svg viewBox="0 0 44 44"><path d="M18 5C19 14 22 17 31 18 22 19 19 22 18 31 17 22 14 19 5 18 14 17 17 14 18 5Z"/><path d="M32 25c.5 4.5 2 6 6.5 6.5-4.5.5-6 2-6.5 6.5-.5-4.5-2-6-6.5-6.5 4.5-.5 6-2 6.5-6.5Z"/></svg>
-          </span>
+          <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="5.4" fill="#17181a" />
+            <rect x="3.96" y="8" width="11.5" height="8" rx="1.5" fill="#3d84f5" />
+            <rect x="5.83" y="10.25" width="7.78" height="1.28" rx="0.64" fill="#fff" />
+            <rect x="5.83" y="12.53" width="5.24" height="1.28" rx="0.64" fill="#fff" fill-opacity="0.7" />
+            <path d="M16.3 5.8h3.2M17.9 5.8v12.4M16.3 18.2h3.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none" />
+          </svg>
           <span class="brand-name" data-tauri-drag-region>Airtype</span>
-          <button class="status" id="status" type="button" title="Пауза / продолжить">
-            <span class="status-dot"></span><span id="status-text">работает</span>
-          </button>
         </div>
-        <button class="icon-btn" id="close" type="button" aria-label="Скрыть">
-          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        <span class="saved" id="saved" role="status" aria-live="polite"></span>
+        <button class="win-close" id="close" type="button" aria-label="Скрыть окно">
+          <svg class="icon"><use href="#i-x" /></svg>
         </button>
       </header>
 
-      <main class="scroll">
-        <section class="hero glass">
-          <p class="hero-title">Выдели текст и нажми</p>
-          <div class="hero-keys" id="hero-keys"></div>
-          <p class="hero-sub">Ничего не выделил? Возьму всё сообщение из поля, где стоит курсор.</p>
+      <nav class="tabs" role="tablist" aria-label="Разделы">
+        <span class="tabs-thumb" aria-hidden="true"></span>
+        <button class="tab" type="button" role="tab" id="tab-actions" data-view="actions" aria-controls="view-actions">Действия</button>
+        <button class="tab" type="button" role="tab" id="tab-model" data-view="model" aria-controls="view-model">Модель</button>
+        <button class="tab" type="button" role="tab" id="tab-general" data-view="general" aria-controls="view-general">Общее</button>
+      </nav>
+
+      <main class="views">
+        <section class="view" id="view-actions" role="tabpanel" aria-labelledby="tab-actions">
+          <div class="notice" id="ax-notice" hidden>
+            <p><strong>Дай доступ к управлению компьютером.</strong> Без «Универсального доступа» macOS не даст скопировать и вставить текст за тебя.</p>
+            <button class="btn" id="ax-open" type="button">Открыть</button>
+          </div>
+          <div class="notice" id="key-notice" hidden>
+            <p><strong>Нужен ключ API.</strong> Без него нейронка не ответит.</p>
+            <button class="btn" id="key-go" type="button">Добавить</button>
+          </div>
+          <div class="notice" id="paused-notice" hidden>
+            <p><strong>Airtype на паузе.</strong> Сочетания клавиш сейчас не работают.</p>
+            <button class="btn" id="resume" type="button">Включить</button>
+          </div>
+
+          <figure class="preview" aria-label="Пример">
+            <p class="preview-before"><mark id="preview-before"></mark></p>
+            <div class="preview-keys" id="preview-keys"></div>
+            <p class="preview-after" id="preview-after"></p>
+          </figure>
+
+          <h2 class="group-label">Сочетания</h2>
+          <div class="group">
+            <ul class="actions" id="actions"></ul>
+            <button class="add" id="add-action" type="button">
+              <svg class="icon"><use href="#i-plus" /></svg>Добавить своё действие
+            </button>
+          </div>
+
+          <h2 class="group-label">Перевод</h2>
+          <div class="group pair">
+            <label class="field">
+              <span class="field-label">Переводить на</span>
+              <input class="input" id="target-lang" list="langs" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span class="field-label">Если текст уже на нём, то на</span>
+              <input class="input" id="secondary-lang" list="langs" spellcheck="false" />
+            </label>
+            <datalist id="langs">
+              <option value="English"></option>
+              <option value="Русский"></option>
+              <option value="Українська"></option>
+              <option value="Deutsch"></option>
+              <option value="Español"></option>
+              <option value="Français"></option>
+              <option value="Italiano"></option>
+              <option value="Português"></option>
+              <option value="Polski"></option>
+              <option value="Türkçe"></option>
+              <option value="中文"></option>
+              <option value="日本語"></option>
+              <option value="한국어"></option>
+            </datalist>
+          </div>
         </section>
 
-        <section class="banner glass" id="ax-banner" hidden>
-          <div>
-            <p class="banner-title">Нужен доступ «Универсальный доступ»</p>
-            <p class="banner-sub">Без него macOS не даст скопировать и вставить текст за тебя.</p>
+        <section class="view" id="view-model" role="tabpanel" aria-labelledby="tab-model" hidden>
+          <h2 class="group-label">Нейронка</h2>
+          <div class="group choices" role="radiogroup" aria-label="Провайдер">
+            <label class="choice">
+              <input type="radio" name="provider" value="anthropic" />
+              <span class="choice-text">
+                <span class="row-title">Claude</span>
+                <span class="row-desc">Ключ из консоли Anthropic</span>
+              </span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="provider" value="openai" />
+              <span class="choice-text">
+                <span class="row-title">OpenAI-совместимый</span>
+                <span class="row-desc">OpenAI, OpenRouter, Ollama, LM Studio</span>
+              </span>
+            </label>
           </div>
-          <button class="btn btn-small" id="ax-open" type="button">Открыть</button>
+
+          <div class="group form">
+            <label class="field">
+              <span class="field-label">Ключ API <span class="field-status" id="key-state"></span></span>
+              <span class="input-wrap">
+                <input class="input" id="api-key" type="password" autocomplete="off" spellcheck="false" />
+                <button class="input-icon" id="key-eye" type="button" aria-label="Показать ключ" aria-pressed="false">
+                  <svg class="icon"><use href="#i-eye" /></svg>
+                </button>
+              </span>
+            </label>
+
+            <div class="pair">
+              <label class="field">
+                <span class="field-label">Модель</span>
+                <input class="input" id="model" list="models" spellcheck="false" />
+                <datalist id="models"></datalist>
+              </label>
+              <label class="field" id="effort-field">
+                <span class="field-label">Усилие</span>
+                <span class="select-wrap">
+                  <select class="input" id="effort">
+                    <option value="low">Низкое, быстрее</option>
+                    <option value="medium">Среднее</option>
+                    <option value="high">Высокое, дольше</option>
+                    <option value="">Как у модели</option>
+                  </select>
+                  <svg class="icon"><use href="#i-chevron" /></svg>
+                </span>
+              </label>
+            </div>
+            <p class="hint" id="model-hint"></p>
+
+            <details class="more">
+              <summary><svg class="icon"><use href="#i-chevron" /></svg>Свой адрес API</summary>
+              <input class="input" id="base-url" spellcheck="false" aria-label="Адрес API" />
+              <p class="hint" id="base-url-hint"></p>
+            </details>
+          </div>
+
+          <div class="check">
+            <button class="btn btn-primary" id="test" type="button">Проверить</button>
+            <span class="hint">Переведёт тестовую фразу</span>
+          </div>
+          <figure class="preview" id="test-result" aria-live="polite" hidden>
+            <p class="preview-before"><mark id="test-before"></mark></p>
+            <p class="preview-after" id="test-after"></p>
+          </figure>
         </section>
 
-        <h2 class="section-label">Нейронка</h2>
-        <section class="card glass">
-          <div class="segmented" id="provider" role="tablist">
-            <span class="segmented-thumb"></span>
-            <button type="button" role="tab" data-value="anthropic">Claude</button>
-            <button type="button" role="tab" data-value="openai">OpenAI-совместимый</button>
+        <section class="view" id="view-general" role="tabpanel" aria-labelledby="tab-general" hidden>
+          <div class="group">
+            <label class="switch-row">
+              <span class="row-text">
+                <span class="row-title">Сочетания клавиш работают</span>
+                <span class="row-desc">Поставить на паузу можно и из меню в трее</span>
+              </span>
+              <input type="checkbox" class="switch" id="enabled" />
+            </label>
+            <label class="switch-row">
+              <span class="row-text">
+                <span class="row-title">Индикатор внизу экрана</span>
+                <span class="row-desc">Видно, что нейронка думает, и если что-то пошло не так</span>
+              </span>
+              <input type="checkbox" class="switch" id="show-hud" />
+            </label>
+            <label class="switch-row">
+              <span class="row-text">
+                <span class="row-title">Запускать вместе с системой</span>
+              </span>
+              <input type="checkbox" class="switch" id="autostart" />
+            </label>
           </div>
 
-          <label class="stack">
-            <span class="label">API ключ <span class="hint" id="key-state"></span></span>
-            <span class="input-wrap">
-              <input id="api-key" type="password" autocomplete="off" spellcheck="false" />
-              <button class="input-icon" id="key-eye" type="button" aria-label="Показать ключ">
-                <svg viewBox="0 0 20 20"><path d="M1.5 10S4.5 4 10 4s8.5 6 8.5 6-3 6-8.5 6S1.5 10 1.5 10Z"/><circle cx="10" cy="10" r="2.6"/></svg>
-              </button>
-            </span>
-          </label>
-
-          <div class="row">
-            <span class="label">Модель</span>
-            <input id="model" list="models" spellcheck="false" />
-            <datalist id="models"></datalist>
+          <div class="group" id="ax-group" hidden>
+            <div class="switch-row">
+              <span class="row-text">
+                <span class="row-title">Универсальный доступ</span>
+                <span class="row-desc" id="ax-state"></span>
+              </span>
+              <button class="btn" id="ax-open-2" type="button">Открыть</button>
+            </div>
           </div>
 
-          <div class="row" id="effort-row">
-            <span class="label">Усилие</span>
-            <select id="effort">
-              <option value="low">низкое · быстрее</option>
-              <option value="medium">среднее</option>
-              <option value="high">высокое · дольше</option>
-              <option value="">по умолчанию</option>
-            </select>
-          </div>
-
-          <details class="more">
-            <summary>Свой адрес апи</summary>
-            <input id="base-url" spellcheck="false" />
-            <p class="hint-block" id="base-url-hint"></p>
-          </details>
-
-          <div class="test">
-            <button class="btn primary" id="test" type="button">Проверить</button>
-            <p class="test-result" id="test-result" hidden></p>
-          </div>
+          <p class="about">
+            Airtype <span id="version"></span>. Ключи хранятся в системной связке ключей, а текст уходит только
+            в выбранный API.
+          </p>
         </section>
-
-        <h2 class="section-label">Перевод</h2>
-        <section class="card glass">
-          <div class="row">
-            <span class="label">Переводить на</span>
-            <input id="target-lang" list="langs" spellcheck="false" />
-          </div>
-          <div class="row">
-            <span class="label">Если текст уже на нём</span>
-            <input id="secondary-lang" list="langs" spellcheck="false" />
-          </div>
-          <datalist id="langs">
-            <option value="English"></option>
-            <option value="Русский"></option>
-            <option value="Українська"></option>
-            <option value="Deutsch"></option>
-            <option value="Español"></option>
-            <option value="Français"></option>
-            <option value="Italiano"></option>
-            <option value="Português"></option>
-            <option value="Polski"></option>
-            <option value="Türkçe"></option>
-            <option value="中文"></option>
-            <option value="日本語"></option>
-            <option value="한국어"></option>
-          </datalist>
-        </section>
-
-        <h2 class="section-label">Действия</h2>
-        <section class="card glass actions">
-          <ul id="actions"></ul>
-          <button class="btn-ghost" id="add-action" type="button">+ своё действие</button>
-        </section>
-
-        <h2 class="section-label">Общее</h2>
-        <section class="card glass">
-          <label class="row switch-row">
-            <span class="label">Показывать индикатор</span>
-            <input type="checkbox" class="switch" id="show-hud" />
-          </label>
-          <label class="row switch-row">
-            <span class="label">Запускать вместе с системой</span>
-            <input type="checkbox" class="switch" id="autostart" />
-          </label>
-        </section>
-
-        <footer class="footer">
-          <span id="saved">Сохраняется само</span>
-          <span>·</span>
-          <span id="version"></span>
-        </footer>
       </main>
     </div>
     <script type="module" src="/src/settings.ts"></script>
