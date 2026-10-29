@@ -3,6 +3,7 @@ use crate::{
     hotkeys::{self, HotkeyError},
     hud, input, llm, local, panel,
     state::{self, AppState},
+    update,
 };
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -208,4 +209,19 @@ pub async fn local_delete(app: AppHandle, model: String) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_settings(window: WebviewWindow) {
     let _ = window.close();
+}
+
+#[tauri::command]
+pub fn update_status() -> update::Status {
+    update::status()
+}
+
+#[tauri::command]
+pub async fn update_check(app: AppHandle) -> Result<Option<String>, String> {
+    update::check(&app, true).await
+}
+
+#[tauri::command]
+pub fn update_install(app: AppHandle) {
+    update::install(&app);
 }

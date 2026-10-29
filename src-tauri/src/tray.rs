@@ -1,12 +1,20 @@
-use crate::state::{self, AppState};
+use crate::{
+    state::{self, AppState},
+    update,
+};
+use std::sync::Mutex;
 #[cfg(not(target_os = "macos"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     webview::PageLoadEvent,
-    AppHandle, Manager, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewWindowBuilder, Wry,
 };
+
+/// The tray menu and its "update to …" line, there only while an update waits.
+static MENU: Mutex<Option<Menu<Wry>>> = Mutex::new(None);
+static UPDATE_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let paused = app.state::<AppState>().settings().paused;
@@ -16,12 +24,18 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open, &pause, &separator, &quit])?;
     *app.state::<AppState>().pause_item.lock().unwrap() = Some(pause.clone());
+    *MENU.lock().unwrap() = Some(menu.clone());
 
     let builder =
         TrayIconBuilder::with_id("main").tooltip("Airtype").menu(&menu).on_menu_event(move |app, event| {
             match event.id().as_ref() {
                 "open" => show_settings(app),
                 "pause" => state::set_paused(app, pause.is_checked().unwrap_or(false)),
+                // The settings show how the download goes.
+                "update" => {
+                    show_settings(app);
+                    update::install(app);
+                }
                 "quit" => app.exit(0),
                 _ => {}
             }
@@ -55,6 +69,31 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 
     builder.build(app)?;
     Ok(())
+}
+
+/// Shows or removes the "update to …" line at the top of the menu.
+pub fn set_update(app: &AppHandle, version: Option<&str>) {
+    let Some(menu) = MENU.lock().unwrap().clone() else { return };
+    let mut item = UPDATE_ITEM.lock().unwrap();
+    match (version, item.as_ref()) {
+        (Some(version), Some(existing)) => {
+            let _ = existing.set_text(format!("Обновить до {version}"));
+        }
+        (Some(version), None) => {
+            if let Ok(new) =
+                MenuItem::with_id(app, "update", format!("Обновить до {version}"), true, None::<&str>)
+            {
+                if menu.insert(&new, 0).is_ok() {
+                    *item = Some(new);
+                }
+            }
+        }
+        (None, Some(existing)) => {
+            let _ = menu.remove(existing);
+            *item = None;
+        }
+        (None, None) => {}
+    }
 }
 
 /// Opens the settings window. It is created on demand and destroyed on close, so

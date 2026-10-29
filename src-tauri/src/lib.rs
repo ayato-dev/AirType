@@ -13,6 +13,7 @@ mod panel;
 mod popup;
 mod state;
 mod tray;
+mod update;
 
 use state::AppState;
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -24,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_settings(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(hotkeys::plugin())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
@@ -46,6 +48,7 @@ pub fn run() {
             tray::create(handle)?;
             hotkeys::apply(handle);
             hud::init(handle);
+            update::watch(handle);
 
             // The keychain can wait on a macOS permission prompt; ask it off the main thread.
             let handle = handle.clone();
@@ -94,6 +97,9 @@ pub fn run() {
             commands::local_download,
             commands::local_cancel,
             commands::local_delete,
+            commands::update_status,
+            commands::update_check,
+            commands::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start airtype");

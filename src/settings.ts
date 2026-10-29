@@ -81,6 +81,15 @@ interface LocalStatus {
   download: LocalProgress | null;
 }
 
+interface UpdateStatus {
+  supported: boolean;
+  available: string | null;
+  stage: "idle" | "checking" | "downloading" | "installing" | "error";
+  done: number;
+  total: number;
+  message: string | null;
+}
+
 type CloudProvider = "anthropic" | "openai";
 
 const BUILTIN = new Set(["translate", "fix", "improve"]);
@@ -203,6 +212,8 @@ const el = {
   axState: $("ax-state"),
   axOpen2: $<HTMLButtonElement>("ax-open-2"),
   version: $("version"),
+  updateResult: $("update-result"),
+  updateCheck: $<HTMLButtonElement>("update-check"),
 };
 
 let ui: UiState;
@@ -213,6 +224,9 @@ let previewId: string | null = null;
 /** Whose hotkey is being recorded: an action or the panel. */
 let recording: { owner: { hotkey: string }; chip: HTMLButtonElement } | null = null;
 let local: LocalStatus = { models: [], download: null };
+let update: UpdateStatus = { supported: false, available: null, stage: "idle", done: 0, total: 0, message: null };
+/** Said after a check the user asked for: "the latest version". */
+let updateResult = "";
 let effortSelect: { render: () => void } | null = null;
 
 function icon(name: string): SVGSVGElement {
@@ -327,6 +341,8 @@ function currentNotes(): Note[] {
   const notes: Note[] = [];
   if (complaint) notes.push(complaint);
   if (ui.notice) notes.push({ text: ui.notice, flag: "не прочитался" });
+  const updateNote = updateNoteFor(update);
+  if (updateNote) notes.push(updateNote);
   // On the model tab the key field is right there, a remark about it would only repeat it.
   if (requiresKey() && !hasKey() && view !== "model") {
     notes.push({
@@ -366,6 +382,55 @@ function currentNotes(): Note[] {
     notes.push({ text: "Сочетания на паузе.", action: { label: "Включить", run: () => setPaused(false) } });
   }
   return notes;
+}
+
+// ---------- updates ----------
+
+function updateNoteFor(u: UpdateStatus): Note | null {
+  switch (u.stage) {
+    case "downloading": {
+      const percent = u.total > 0 ? `, ${Math.floor((u.done / u.total) * 100)}%` : "";
+      return { text: `Скачиваю обновление${percent}.` };
+    }
+    case "installing":
+      return { text: "Ставлю обновление, Airtype сейчас перезапустится." };
+    case "error":
+      if (!u.message) return null;
+      return {
+        text: `${u.message}.`.replace(/\.\.$/, "."),
+        flag: u.message.split(":")[0],
+        action: { label: "Ещё раз", run: () => void (u.available ? installUpdate() : checkUpdate()) },
+      };
+    default:
+      return u.available
+        ? { text: `Вышла версия ${u.available}.`, action: { label: "Обновить", run: () => void installUpdate() } }
+        : null;
+  }
+}
+
+function renderUpdate() {
+  const checking = update.stage === "checking";
+  el.updateCheck.disabled = checking;
+  el.updateCheck.textContent = checking ? "Проверяю…" : "Проверить обновления";
+  el.updateCheck.hidden =
+    !update.supported || update.available !== null || update.stage === "downloading" || update.stage === "installing";
+  el.updateResult.textContent = update.available ? `Есть версия ${update.available}.` : updateResult;
+  renderNotes();
+}
+
+async function checkUpdate() {
+  updateResult = "";
+  try {
+    const found = await invoke<string | null>("update_check");
+    if (!found) updateResult = "Это последняя версия.";
+  } catch {
+    // The error comes with the status event and shows as a note.
+  }
+  renderUpdate();
+}
+
+async function installUpdate() {
+  await invoke("update_install");
 }
 
 function renderNotes() {
@@ -608,6 +673,7 @@ function renderLocal() {
 
 async function refreshLocal() {
   local = await invoke<LocalStatus>("local_status");
+  update = await invoke<UpdateStatus>("update_status");
   if (settings.provider === "local") renderLocal();
   renderNotes();
 }
@@ -1044,6 +1110,7 @@ function bind() {
   });
 
   el.axOpen2.addEventListener("click", openAccessibility);
+  el.updateCheck.addEventListener("click", () => void checkUpdate());
 }
 
 /** Picks up changes made outside this window: tray pause, a granted permission, a new key. */
@@ -1070,6 +1137,7 @@ async function init() {
 
   renderProvider();
   renderActions();
+  renderUpdate();
   bind();
   showView((requiresKey() && !hasKey()) || (settings.provider === "local" && !localReady()) ? "model" : "actions");
 
@@ -1084,6 +1152,11 @@ async function init() {
     } else if (settings.provider === "local") {
       renderLocal();
     }
+  });
+
+  await listen<UpdateStatus>("update", ({ payload }) => {
+    update = payload;
+    renderUpdate();
   });
 
   await listen<Settings>("settings-changed", ({ payload }) => {
