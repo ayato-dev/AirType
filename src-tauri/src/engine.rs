@@ -1,8 +1,14 @@
-//! One run of an action: grab the text from the focused field, send it to the
-//! model, paste the answer back, then put the user's clipboard back as it was.
+//! One run of an action: take the text from the focused field, send it to the
+//! model, put the answer back.
+//!
+//! The text is read through the accessibility API when the app supports it and
+//! with Ctrl/Cmd+C otherwise. The answer is written the same way where that is
+//! safe, else pasted; the user's clipboard is put back as it was.
 
 use crate::{
-    config, hud,
+    config,
+    field::{self, Focused, Replaced},
+    hud,
     input::{self, Chord},
     llm,
     state::AppState,
@@ -54,12 +60,23 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
 
     input::wait_modifiers_released(Duration::from_millis(1500));
     let target = input::foreground();
+    let field = match field::focused() {
+        Focused::Password => return Err("Это поле для пароля, его не трогаю".into()),
+        Focused::Text(snapshot) if !snapshot.text.trim().is_empty() => Some(snapshot),
+        Focused::Text(_) | Focused::Unknown => None,
+    };
     let mut clipboard = Clipboard::new().map_err(|e| format!("Буфер обмена недоступен: {e}"))?;
     let saved = clipboard.get_text().ok();
 
-    let Some(text) = grab_text(&mut clipboard) else {
-        restore(&mut clipboard, saved);
-        return Err("Не нашёл текст. Выдели его или поставь курсор в поле".into());
+    let text = match &field {
+        Some(snapshot) => snapshot.text.clone(),
+        None => match grab_text(&mut clipboard) {
+            Some(text) => text,
+            None => {
+                restore(&mut clipboard, saved);
+                return Err("Не нашёл текст. Выдели его или поставь курсор в поле".into());
+            }
+        },
     };
 
     if settings.show_hud {
@@ -76,18 +93,40 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
     let output = match result {
         Ok(output) => output,
         Err(e) => {
-            restore(&mut clipboard, saved);
+            // Read through the accessibility API, the clipboard was never touched.
+            if field.is_none() {
+                restore(&mut clipboard, saved);
+            }
             return Err(e);
         }
     };
 
     input::restore_focus(target);
-    set_private(&mut clipboard, output).map_err(|e| format!("Не смог положить текст в буфер обмена: {e}"))?;
+    if let Some(snapshot) = &field {
+        match snapshot.replace(&output) {
+            Replaced::Done => return Ok(()),
+            Replaced::Changed => {
+                // Pasting now would land on whatever the user is doing; leave the answer to them.
+                let _ = clipboard.set_text(output);
+                return Err("Текст поменялся, пока нейронка думала. Ответ лежит в буфере обмена".into());
+            }
+            Replaced::Unsupported if snapshot.whole => {
+                input::press(Chord::SelectAll);
+                thread::sleep(Duration::from_millis(60));
+            }
+            Replaced::Unsupported => {}
+        }
+    }
+    paste(&mut clipboard, output, saved)
+}
+
+fn paste(clipboard: &mut Clipboard, output: String, saved: Option<String>) -> Result<(), String> {
+    set_private(clipboard, output).map_err(|e| format!("Не смог положить текст в буфер обмена: {e}"))?;
     thread::sleep(Duration::from_millis(40));
     input::press(Chord::Paste);
     // Apps read the clipboard a moment after Ctrl+V, so don't swap it back too early.
     thread::sleep(Duration::from_millis(350));
-    restore(&mut clipboard, saved);
+    restore(clipboard, saved);
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod engine;
+mod field;
 mod hotkeys;
 mod hud;
 mod input;

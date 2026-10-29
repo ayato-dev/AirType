@@ -24,6 +24,8 @@ arboard = { version = "3", default-features = false }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target.'cfg(windows)'.dependencies]
+# Already pulled in by Tauri's WebView2 layer; here only for UI Automation (COM).
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Accessibility"] }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_Input_KeyboardAndMouse",
