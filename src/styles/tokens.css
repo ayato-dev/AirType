@@ -1,119 +1,115 @@
 @font-face {
-  font-family: "Onest";
-  src: url("../assets/fonts/onest-latin-wght-normal.woff2") format("woff2");
-  font-weight: 100 900;
+  font-family: "Ysabeau Office";
+  src: url("../assets/fonts/ysabeau-office-latin-wght-normal.woff2") format("woff2");
+  font-weight: 1 1000;
   font-display: block;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
     U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 @font-face {
-  font-family: "Onest";
-  src: url("../assets/fonts/onest-cyrillic-wght-normal.woff2") format("woff2");
-  font-weight: 100 900;
+  font-family: "Ysabeau Office";
+  src: url("../assets/fonts/ysabeau-office-cyrillic-wght-normal.woff2") format("woff2");
+  font-weight: 1 1000;
   font-display: block;
   unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
 }
 
+/*
+ * Airtype is a proofreader's tool, so the interface borrows from proofreading:
+ * the one colour is a highlighter, a choice is "selected text", a remark is a
+ * change bar in the margin. Everything else is ink on the system glass.
+ */
 :root {
-  --font: "Onest", -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  /* Keycap symbols (⌘ ⌥ ⇧ ⌃) are not in Onest; the system face draws them. */
-  --font-keys: -apple-system, "Segoe UI Variable Text", "Segoe UI", "Onest", sans-serif;
+  --font: "Ysabeau Office", -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  /* Keycap symbols (⌘ ⌥ ⇧ ⌃) are not in the text face; the system face draws them. */
+  --font-keys: -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
 
-  --fs-small: 12px;
-  --fs-meta: 13px;
-  --fs-body: 14px;
-  --fs-lead: 17px;
+  --fs-small: 12.5px;
+  --fs-meta: 13.5px;
+  --fs-body: 15px;
+  --fs-title: 19px;
 
   --radius-window: 12px;
-  --radius-group: 18px;
-  --radius-field: 12px;
-  --pill: 999px;
-  --control: 36px;
+  --radius-sheet: 16px;
+  --radius-field: 10px;
+  /* A highlighter stroke is never a perfect rectangle: the corners differ a little. */
+  --radius-mark: 3px 7px 4px 8px / 7px 4px 8px 4px;
 
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --fast: 150ms;
   --base: 220ms;
 
   /* light */
-  --ground: rgba(246, 246, 245, 0.74);
-  --surface: rgba(255, 255, 255, 0.8);
-  --surface-hover: rgba(255, 255, 255, 0.95);
-  --sunken: rgba(20, 20, 20, 0.045);
-  --field: #ffffff;
-  --field-border: rgba(20, 20, 20, 0.13);
-  --field-border-hover: rgba(20, 20, 20, 0.24);
-  --rule: rgba(20, 20, 20, 0.07);
+  --ground: rgba(244, 245, 243, 0.72);
+  --sheet: #ffffff;
+  --sunken: rgba(20, 20, 20, 0.05);
+  --hover: rgba(20, 20, 20, 0.04);
+  --field: rgba(20, 20, 20, 0.055);
+  --field-focus: #ffffff;
+  --rule: rgba(20, 20, 20, 0.08);
 
-  --text: #151515;
-  --muted: #5d5d5d;
-  --faint: #6b6b6b;
+  --ink: #161616;
+  --muted: #5a5a5a;
+  --faint: #616161;
+  --paper-ink: #ffffff;
 
-  --primary: #161616;
-  --primary-hover: #2e2e2e;
-  --primary-ink: #ffffff;
-  --toggle-on: #161616;
-  --toggle-knob: #ffffff;
+  /* the highlighter */
+  --marker: #e3f56a;
+  --marker-strong: #c9e43a;
+  --marker-ink: #161616;
+  /* A link is a quick stroke of the marker through the lower half of the word. */
+  --link-stroke: 0.42em;
+  --link-offset: -0.24em;
 
-  --accent: #1765dd;
-  --accent-ink: #ffffff;
-  --mark: #cfe0ff;
-  --focus: rgba(23, 101, 221, 0.4);
-
-  --positive: #247b50;
+  --positive: #2b6e3f;
   --negative: #c4242a;
-  --notice-bg: #fff8e6;
-  --notice-border: #f2d58a;
-  --notice-ink: #6f4300;
 
   --edge-top: rgba(255, 255, 255, 0.95);
   --edge-bottom: rgba(255, 255, 255, 0.35);
   --grain: 0.035;
   --key-face: #ffffff;
-  --key-edge: rgba(20, 20, 20, 0.16);
-  --radio-gap: #ffffff;
+  --key-edge: rgba(20, 20, 20, 0.18);
+  --sheet-edge: rgba(20, 20, 20, 0.06);
+  --mark-edge: transparent;
+  --sheet-shadow: 0 1px 2px rgba(20, 20, 20, 0.05), 0 12px 32px -18px rgba(20, 20, 20, 0.25);
 
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: rgba(28, 28, 30, 0.62);
-    --surface: rgba(255, 255, 255, 0.07);
-    --surface-hover: rgba(255, 255, 255, 0.1);
-    --sunken: rgba(0, 0, 0, 0.22);
-    --field: rgba(0, 0, 0, 0.28);
-    --field-border: rgba(255, 255, 255, 0.13);
-    --field-border-hover: rgba(255, 255, 255, 0.24);
-    --rule: rgba(255, 255, 255, 0.07);
+    --ground: rgba(26, 26, 27, 0.66);
+    --sheet: #232324;
+    --sunken: rgba(255, 255, 255, 0.06);
+    --hover: rgba(255, 255, 255, 0.05);
+    --field: rgba(255, 255, 255, 0.07);
+    --field-focus: rgba(0, 0, 0, 0.35);
+    --rule: rgba(255, 255, 255, 0.08);
 
-    --text: #f3f3f3;
-    --muted: #ababab;
-    --faint: #949494;
+    --ink: #f1f1ee;
+    --muted: #acaca8;
+    --faint: #969692;
+    --paper-ink: #161616;
 
-    --primary: #f3f3f3;
-    --primary-hover: #ffffff;
-    --primary-ink: #141414;
-    --toggle-on: #f3f3f3;
-    --toggle-knob: #1c1c1e;
+    --marker: #d5ec4f;
+    --marker-strong: #e3f56a;
+    --marker-ink: #161616;
+    /* Light ink on the marker would vanish, so on dark the stroke runs under the word. */
+    --link-stroke: 0.2em;
+    --link-offset: 0.14em;
 
-    --accent: #6aa8ff;
-    --accent-ink: #0b1a33;
-    --mark: rgba(80, 145, 255, 0.34);
-    --focus: rgba(106, 168, 255, 0.5);
+    --positive: #8fd19e;
+    --negative: #ff8a80;
 
-    --positive: #4cc38a;
-    --negative: #ff7b7b;
-    --notice-bg: rgba(255, 196, 61, 0.1);
-    --notice-border: rgba(255, 196, 61, 0.28);
-    --notice-ink: #f5cf7a;
-
-    --edge-top: rgba(255, 255, 255, 0.24);
-    --edge-bottom: rgba(255, 255, 255, 0.06);
+    --edge-top: rgba(255, 255, 255, 0.22);
+    --edge-bottom: rgba(255, 255, 255, 0.05);
     --grain: 0.05;
     --key-face: rgba(255, 255, 255, 0.1);
-    --key-edge: rgba(0, 0, 0, 0.5);
-    --radio-gap: #232325;
+    --key-edge: rgba(0, 0, 0, 0.55);
+    --sheet-edge: rgba(255, 255, 255, 0.07);
+    --mark-edge: rgba(255, 255, 255, 0.18);
+    --sheet-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 14px 34px -18px rgba(0, 0, 0, 0.7);
 
     color-scheme: dark;
   }
@@ -122,15 +118,13 @@
 /* No see-through when the system asks for less transparency. */
 @media (prefers-reduced-transparency: reduce) {
   :root {
-    --ground: #f3f3f2;
-    --surface: #ffffff;
+    --ground: #f1f2f0;
     --grain: 0;
   }
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
   :root {
-    --ground: #1c1c1e;
-    --surface: #262628;
+    --ground: #1b1b1c;
   }
 }

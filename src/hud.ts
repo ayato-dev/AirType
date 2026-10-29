@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { squiggleLead } from "./flag";
 
 type HudEvent =
   | { state: "working"; action: string; label: string }
@@ -11,27 +12,38 @@ const WORKING: Record<string, string> = {
   improve: "Улучшаю",
 };
 
-const pill = document.getElementById("pill") as HTMLElement;
+const slip = document.getElementById("slip") as HTMLElement;
 const text = document.getElementById("text") as HTMLElement;
 
+/** The marker layer repeats the text so the letters it covers switch to marker ink. */
+function say(words: string) {
+  text.textContent = words;
+  text.dataset.text = words;
+}
+
+function sayError(message: string) {
+  text.replaceChildren(...squiggleLead(message));
+  delete text.dataset.text;
+}
+
 function replayEntrance() {
-  pill.classList.remove("enter");
-  void pill.offsetWidth; // restart the animation
-  pill.classList.add("enter");
+  slip.classList.remove("enter");
+  void slip.offsetWidth; // restart the animation
+  slip.classList.add("enter");
 }
 
 void listen<HudEvent>("hud", ({ payload }) => {
-  pill.dataset.state = payload.state;
+  slip.dataset.state = payload.state;
   switch (payload.state) {
     case "working":
-      text.textContent = `${WORKING[payload.action] ?? payload.label}…`;
+      say(`${WORKING[payload.action] ?? payload.label}…`);
       replayEntrance();
       break;
     case "done":
-      text.textContent = "Готово";
+      say("Готово");
       break;
     case "error":
-      text.textContent = payload.message;
+      sayError(payload.message);
       replayEntrance();
       break;
   }

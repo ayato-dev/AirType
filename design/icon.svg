@@ -6,8 +6,8 @@
   </defs>
   <rect x="100" y="100" width="824" height="824" rx="185" fill="#17181a" filter="url(#drop)"/>
   <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#fff" stroke-opacity="0.1" stroke-width="3"/>
-  <rect x="236" y="375" width="395" height="275" rx="52" fill="#3d84f5"/>
-  <rect x="300" y="452" width="267" height="44" rx="22" fill="#fff"/>
-  <rect x="300" y="530" width="180" height="44" rx="22" fill="#fff" fill-opacity="0.7"/>
+  <rect x="236" y="375" width="395" height="275" rx="52" fill="#e3f56a"/>
+  <rect x="300" y="452" width="267" height="44" rx="22" fill="#17181a"/>
+  <rect x="300" y="530" width="180" height="44" rx="22" fill="#17181a" fill-opacity="0.55"/>
   <path d="M659 299h110M714 299v426M659 725h110" stroke="#fff" stroke-width="55" stroke-linecap="round" fill="none"/>
 </svg>

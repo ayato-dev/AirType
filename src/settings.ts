@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { squiggleLead } from "./flag";
 import { hotkeyLabel, hotkeyParts, isMac, recordKey } from "./hotkey";
 
 type Provider = "anthropic" | "openai";
@@ -58,8 +59,12 @@ const MODELS: Record<Provider, { value: string; label: string }[]> = {
   openai: [],
 };
 
-const PROVIDER_TEXT: Record<Provider, { key: string; model: string; modelHint: string; url: string; urlHint: string }> = {
+const PROVIDER_TEXT: Record<
+  Provider,
+  { hint: string; key: string; model: string; modelHint: string; url: string; urlHint: string }
+> = {
   anthropic: {
+    hint: "Ключ берётся в console.anthropic.com, раздел API keys.",
     key: "sk-ant-…",
     model: "claude-opus-5-5",
     modelHint: "Opus 5.5 пишет лучше всех, Haiku 5.5 отвечает быстрее и стоит дешевле.",
@@ -67,6 +72,7 @@ const PROVIDER_TEXT: Record<Provider, { key: string; model: string; modelHint: s
     urlHint: "Пусто значит официальный api.anthropic.com. Для прокси укажи адрес без /v1.",
   },
   openai: {
+    hint: "OpenAI, OpenRouter, Ollama, LM Studio и всё, что говорит на языке OpenAI.",
     key: "Для локальной модели не нужен",
     model: "Имя модели у провайдера",
     modelHint: "Имя модели пиши так, как в документации провайдера.",
@@ -94,13 +100,10 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const el = {
-  saved: $("saved"),
+  notes: $("notes"),
   views: document.querySelector<HTMLElement>(".views")!,
   tabs: document.querySelector<HTMLElement>(".tabs")!,
   tabButtons: [...document.querySelectorAll<HTMLButtonElement>(".tab")],
-  axNotice: $("ax-notice"),
-  keyNotice: $("key-notice"),
-  pausedNotice: $("paused-notice"),
   previewBefore: $("preview-before"),
   previewKeys: $("preview-keys"),
   previewAfter: $("preview-after"),
@@ -109,6 +112,7 @@ const el = {
   targetLang: $<HTMLInputElement>("target-lang"),
   secondaryLang: $<HTMLInputElement>("secondary-lang"),
   providers: [...document.querySelectorAll<HTMLInputElement>('input[name="provider"]')],
+  providerHint: $("provider-hint"),
   apiKey: $<HTMLInputElement>("api-key"),
   keyEye: $<HTMLButtonElement>("key-eye"),
   keyState: $("key-state"),
@@ -134,6 +138,7 @@ const el = {
 
 let ui: UiState;
 let settings: Settings;
+let view: View = "actions";
 let expanded: string | null = null;
 let previewId: string | null = null;
 let recording: { action: Action; chip: HTMLButtonElement } | null = null;
@@ -155,7 +160,6 @@ function requiresKey(): boolean {
 // ---------- saving ----------
 
 let saveTimer: number | undefined;
-let savedTimer: number | undefined;
 
 function scheduleSave(delay = 350) {
   window.clearTimeout(saveTimer);
@@ -167,25 +171,15 @@ async function save() {
   try {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("save_settings", { settings });
     refreshActionMeta();
-    flash("Сохранено", true);
   } catch (e) {
-    flash(`Не сохранилось: ${e}`, false);
+    complain("Не сохранилось.", e);
   }
-}
-
-function flash(text: string, ok: boolean) {
-  el.saved.replaceChildren(...(ok ? [icon("i-check")] : []), text);
-  el.saved.classList.toggle("error", !ok);
-  el.saved.classList.add("show");
-  window.clearTimeout(savedTimer);
-  savedTimer = window.setTimeout(() => el.saved.classList.remove("show"), ok ? 1400 : 5000);
 }
 
 // ---------- views ----------
 
-function showView(view: View, focus = false) {
-  const index = VIEWS.indexOf(view);
-  el.tabs.style.setProperty("--tab", String(index));
+function showView(next: View, focus = false) {
+  view = next;
   for (const tab of el.tabButtons) {
     const on = tab.dataset.view === view;
     tab.setAttribute("aria-selected", String(on));
@@ -194,6 +188,7 @@ function showView(view: View, focus = false) {
   }
   for (const name of VIEWS) $(`view-${name}`).hidden = name !== view;
   el.views.scrollTop = 0;
+  renderNotes();
   updateFade();
 }
 
@@ -214,18 +209,99 @@ function keycaps(accelerator: string): HTMLElement[] {
   });
 }
 
-function renderNotices() {
-  el.axNotice.hidden = ui.platform !== "macos" || ui.accessibility;
-  el.keyNotice.hidden = !requiresKey() || ui.keys[settings.provider];
-  el.pausedNotice.hidden = !settings.paused;
-  el.enabled.checked = !settings.paused;
+// ---------- notes: remarks in the margin ----------
 
+interface Note {
+  text: string;
+  /** The words a proofreader would squiggle: what is wrong. */
+  flag?: string;
+  action?: { label: string; run: () => void };
+}
+
+let complaint: Note | null = null;
+let complaintTimer: number | undefined;
+
+/** Something failed: say so above the settings for a few seconds. */
+function complain(what: string, error: unknown) {
+  const detail = String(error);
+  complaint = { text: `${what} ${detail.charAt(0).toUpperCase()}${detail.slice(1)}`, flag: what };
+  window.clearTimeout(complaintTimer);
+  complaintTimer = window.setTimeout(() => {
+    complaint = null;
+    renderNotes();
+  }, 6000);
+  renderNotes();
+}
+
+function openAccessibility() {
+  void invoke("request_accessibility");
+}
+
+function currentNotes(): Note[] {
+  const notes: Note[] = [];
+  if (complaint) notes.push(complaint);
+  // On the model tab the key field is right there, a remark about it would only repeat it.
+  if (requiresKey() && !ui.keys[settings.provider] && view !== "model") {
+    notes.push({
+      text: "Без ключа API нейронка не ответит.",
+      flag: "ключа API",
+      action: {
+        label: "Вставить ключ",
+        run: () => {
+          showView("model");
+          el.apiKey.focus();
+        },
+      },
+    });
+  }
+  if (ui.platform === "macos" && !ui.accessibility && view !== "general") {
+    notes.push({
+      text: "macOS пока не даёт Airtype копировать и вставлять текст.",
+      flag: "не даёт",
+      action: { label: "Разрешить", run: openAccessibility },
+    });
+  }
+  // On the general tab the "hotkeys work" tick already says it.
+  if (settings.paused && view !== "general") {
+    notes.push({ text: "Сочетания на паузе.", action: { label: "Включить", run: () => setPaused(false) } });
+  }
+  return notes;
+}
+
+function renderNotes() {
+  el.notes.replaceChildren(
+    ...currentNotes().map((note) => {
+      const p = document.createElement("p");
+      p.className = "note";
+      const at = note.flag ? note.text.indexOf(note.flag) : -1;
+      if (note.flag && at >= 0) {
+        const flag = Object.assign(document.createElement("span"), { className: "flag", textContent: note.flag });
+        p.append(note.text.slice(0, at), flag, note.text.slice(at + note.flag.length));
+      } else {
+        p.append(note.text);
+      }
+      if (note.action) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "link";
+        button.textContent = note.action.label;
+        button.addEventListener("click", note.action.run);
+        p.append(" ", button);
+      }
+      return p;
+    }),
+  );
+}
+
+function renderStatus() {
+  el.enabled.checked = !settings.paused;
   el.axGroup.hidden = ui.platform !== "macos";
   el.axState.textContent = ui.accessibility
-    ? "Выдан, Airtype может копировать и вставлять текст"
-    : "Нужен, чтобы копировать и вставлять текст за тебя";
+    ? "Разрешён, Airtype копирует и вставляет текст за тебя."
+    : "Нужен, чтобы Airtype мог скопировать текст из поля и вставить ответ.";
   el.axState.classList.toggle("ok", ui.accessibility);
   el.axOpen2.hidden = ui.accessibility;
+  renderNotes();
 }
 
 function translateExample(): { before: string; after: string | null } {
@@ -293,15 +369,12 @@ function renderProvider() {
   const cfg = settings[provider];
   const text = PROVIDER_TEXT[provider];
   for (const radio of el.providers) radio.checked = radio.value === provider;
+  el.providerHint.textContent = text.hint;
 
   const hasKey = ui.keys[provider];
   el.apiKey.value = "";
   el.apiKey.placeholder = hasKey ? "Вставь новый, чтобы заменить" : text.key;
-  if (hasKey) {
-    el.keyState.replaceChildren(icon("i-check"), "Сохранён");
-  } else {
-    el.keyState.replaceChildren();
-  }
+  el.keyState.textContent = hasKey ? "сохранён в связке ключей" : "";
 
   el.model.value = cfg.model;
   el.model.placeholder = text.model;
@@ -321,7 +394,7 @@ function renderProvider() {
   el.baseUrl.placeholder = text.url;
   el.baseUrlHint.textContent = text.urlHint;
   el.testResult.hidden = true;
-  renderNotices();
+  renderStatus();
 }
 
 function renderActions() {
@@ -351,7 +424,7 @@ function refreshActionMeta() {
     if (!desc) continue;
     const meta = actionMeta(action);
     desc.textContent = meta.text;
-    desc.classList.toggle("error", meta.error);
+    desc.classList.toggle("flag", meta.error);
   }
   renderPreview();
 }
@@ -377,7 +450,7 @@ function actionRow(action: Action): HTMLLIElement {
   desc.dataset.meta = action.id;
   const meta = actionMeta(action);
   desc.textContent = meta.text;
-  desc.classList.toggle("error", meta.error);
+  desc.classList.toggle("flag", meta.error);
   main.append(title, desc);
   main.addEventListener("click", () => {
     expanded = expanded === action.id ? null : action.id;
@@ -396,7 +469,7 @@ function actionRow(action: Action): HTMLLIElement {
 
   const toggle = document.createElement("input");
   toggle.type = "checkbox";
-  toggle.className = "switch";
+  toggle.className = "tick";
   toggle.checked = action.enabled;
   toggle.setAttribute("aria-label", `Включить «${action.name}»`);
   toggle.addEventListener("change", () => {
@@ -406,7 +479,7 @@ function actionRow(action: Action): HTMLLIElement {
     refreshActionMeta();
   });
 
-  head.append(main, chip, toggle);
+  head.append(toggle, main, chip);
   li.append(head);
 
   if (expanded === action.id) li.append(actionEditor(action, title));
@@ -450,7 +523,7 @@ function actionEditor(action: Action, title: HTMLElement): HTMLElement {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "link-danger";
-    remove.append(icon("i-trash"), "Удалить");
+    remove.textContent = "Удалить";
     remove.addEventListener("click", () => {
       settings.actions = settings.actions.filter((a) => a !== action);
       expanded = null;
@@ -548,7 +621,7 @@ window.addEventListener("blur", () => stopRecording());
 
 function setPaused(paused: boolean) {
   settings.paused = paused;
-  renderNotices();
+  renderStatus();
   void save();
 }
 
@@ -569,11 +642,6 @@ function bind() {
     showView(VIEWS[next], true);
   });
 
-  $("key-go").addEventListener("click", () => {
-    showView("model");
-    el.apiKey.focus();
-  });
-  $("resume").addEventListener("click", () => setPaused(false));
   el.enabled.addEventListener("change", () => setPaused(!el.enabled.checked));
 
   for (const radio of el.providers) {
@@ -599,9 +667,8 @@ function bind() {
       await invoke("set_api_key", { provider: settings.provider, key });
       ui.keys[settings.provider] = true;
       renderProvider();
-      flash("Ключ сохранён", true);
     } catch (e) {
-      flash(`Ключ не сохранился: ${e}`, false);
+      complain("Ключ не сохранился.", e);
     }
   };
   el.apiKey.addEventListener("change", saveKey);
@@ -615,7 +682,7 @@ function bind() {
   });
   el.baseUrl.addEventListener("input", () => {
     settings[settings.provider].baseUrl = el.baseUrl.value.trim();
-    renderNotices();
+    renderNotes();
     scheduleSave();
   });
   el.effort.addEventListener("change", () => {
@@ -638,7 +705,7 @@ function bind() {
       el.testAfter.textContent = answer;
     } catch (e) {
       el.testAfter.className = "preview-after error";
-      el.testAfter.textContent = String(e);
+      el.testAfter.replaceChildren(...squiggleLead(String(e)));
     } finally {
       el.test.removeAttribute("aria-busy");
       el.test.textContent = "Проверить";
@@ -678,15 +745,12 @@ function bind() {
   el.autostart.addEventListener("change", async () => {
     try {
       await invoke("set_autostart", { enabled: el.autostart.checked });
-      flash("Сохранено", true);
     } catch (e) {
       el.autostart.checked = !el.autostart.checked;
-      flash(`Не вышло: ${e}`, false);
+      complain("Автозапуск не переключился.", e);
     }
   });
 
-  const openAccessibility = () => void invoke("request_accessibility");
-  $("ax-open").addEventListener("click", openAccessibility);
   el.axOpen2.addEventListener("click", openAccessibility);
 }
 
@@ -696,7 +760,7 @@ async function refreshExternal() {
   ui.keys = fresh.keys;
   ui.accessibility = fresh.accessibility;
   settings.paused = fresh.settings.paused;
-  renderNotices();
+  renderStatus();
 }
 
 async function init() {
@@ -718,7 +782,7 @@ async function init() {
   await listen<Settings>("settings-changed", ({ payload }) => {
     if (payload.paused !== settings.paused) {
       settings.paused = payload.paused;
-      renderNotices();
+      renderStatus();
     }
   });
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {

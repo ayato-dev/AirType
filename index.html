@@ -10,7 +10,6 @@
     <svg width="0" height="0" aria-hidden="true" style="position: absolute">
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" /></symbol>
-      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" /></symbol>
       <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24">
         <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" />
@@ -21,9 +20,6 @@
         <path d="M14.08 14.16a3 3 0 0 1-4.24-4.24" />
         <path d="M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14M2 2l20 20" />
       </symbol>
-      <symbol id="i-trash" viewBox="0 0 24 24">
-        <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-      </symbol>
     </svg>
 
     <div class="window">
@@ -31,57 +27,42 @@
         <div class="brand" data-tauri-drag-region>
           <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
             <rect width="24" height="24" rx="5.4" fill="#17181a" />
-            <rect x="3.96" y="8" width="11.5" height="8" rx="1.5" fill="#3d84f5" />
-            <rect x="5.83" y="10.25" width="7.78" height="1.28" rx="0.64" fill="#fff" />
-            <rect x="5.83" y="12.53" width="5.24" height="1.28" rx="0.64" fill="#fff" fill-opacity="0.7" />
+            <rect x="3.96" y="8" width="11.5" height="8" rx="1.5" fill="#e3f56a" />
+            <rect x="5.83" y="10.25" width="7.78" height="1.28" rx="0.64" fill="#17181a" />
+            <rect x="5.83" y="12.53" width="5.24" height="1.28" rx="0.64" fill="#17181a" fill-opacity="0.55" />
             <path d="M16.3 5.8h3.2M17.9 5.8v12.4M16.3 18.2h3.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round" fill="none" />
           </svg>
           <span class="brand-name" data-tauri-drag-region>Airtype</span>
         </div>
-        <span class="saved" id="saved" role="status" aria-live="polite"></span>
         <button class="win-close" id="close" type="button" aria-label="Скрыть окно">
           <svg class="icon"><use href="#i-x" /></svg>
         </button>
       </header>
 
-      <nav class="tabs" role="tablist" aria-label="Разделы">
-        <span class="tabs-thumb" aria-hidden="true"></span>
+      <nav class="tabs" role="tablist" aria-label="Разделы" data-tauri-drag-region>
         <button class="tab" type="button" role="tab" id="tab-actions" data-view="actions" aria-controls="view-actions">Действия</button>
         <button class="tab" type="button" role="tab" id="tab-model" data-view="model" aria-controls="view-model">Модель</button>
         <button class="tab" type="button" role="tab" id="tab-general" data-view="general" aria-controls="view-general">Общее</button>
       </nav>
 
       <main class="views">
-        <section class="view" id="view-actions" role="tabpanel" aria-labelledby="tab-actions">
-          <div class="notice" id="ax-notice" hidden>
-            <p><strong>Дай доступ к управлению компьютером.</strong> Без «Универсального доступа» macOS не даст скопировать и вставить текст за тебя.</p>
-            <button class="btn" id="ax-open" type="button">Открыть</button>
-          </div>
-          <div class="notice" id="key-notice" hidden>
-            <p><strong>Нужен ключ API.</strong> Без него нейронка не ответит.</p>
-            <button class="btn" id="key-go" type="button">Добавить</button>
-          </div>
-          <div class="notice" id="paused-notice" hidden>
-            <p><strong>Airtype на паузе.</strong> Сочетания клавиш сейчас не работают.</p>
-            <button class="btn" id="resume" type="button">Включить</button>
-          </div>
+        <div class="notes" id="notes" aria-live="polite"></div>
 
-          <figure class="preview" aria-label="Пример">
+        <section class="view" id="view-actions" role="tabpanel" aria-labelledby="tab-actions">
+          <figure class="sheet preview" aria-label="Пример">
             <p class="preview-before"><mark id="preview-before"></mark></p>
             <div class="preview-keys" id="preview-keys"></div>
             <p class="preview-after" id="preview-after"></p>
           </figure>
 
-          <h2 class="group-label">Сочетания</h2>
-          <div class="group">
-            <ul class="actions" id="actions"></ul>
-            <button class="add" id="add-action" type="button">
-              <svg class="icon"><use href="#i-plus" /></svg>Добавить своё действие
-            </button>
-          </div>
+          <h2 class="title">Сочетания</h2>
+          <ul class="actions" id="actions"></ul>
+          <button class="add" id="add-action" type="button">
+            <svg class="icon"><use href="#i-plus" /></svg>Добавить своё действие
+          </button>
 
-          <h2 class="group-label">Перевод</h2>
-          <div class="group pair">
+          <h2 class="title">Перевод</h2>
+          <div class="pair">
             <label class="field">
               <span class="field-label">Переводить на</span>
               <input class="input" id="target-lang" list="langs" spellcheck="false" />
@@ -109,25 +90,20 @@
         </section>
 
         <section class="view" id="view-model" role="tabpanel" aria-labelledby="tab-model" hidden>
-          <h2 class="group-label">Нейронка</h2>
-          <div class="group choices" role="radiogroup" aria-label="Провайдер">
-            <label class="choice">
-              <input type="radio" name="provider" value="anthropic" />
-              <span class="choice-text">
-                <span class="row-title">Claude</span>
-                <span class="row-desc">Ключ из консоли Anthropic</span>
-              </span>
+          <fieldset class="pick">
+            <legend class="visually-hidden">Кто отвечает</legend>
+            <span class="pick-word">Отвечает</span>
+            <label class="pick-option">
+              <input type="radio" name="provider" value="anthropic" /><span>Claude</span>
             </label>
-            <label class="choice">
-              <input type="radio" name="provider" value="openai" />
-              <span class="choice-text">
-                <span class="row-title">OpenAI-совместимый</span>
-                <span class="row-desc">OpenAI, OpenRouter, Ollama, LM Studio</span>
-              </span>
+            <span class="pick-word">или</span>
+            <label class="pick-option">
+              <input type="radio" name="provider" value="openai" /><span>OpenAI-совместимая</span>
             </label>
-          </div>
+          </fieldset>
+          <p class="hint" id="provider-hint"></p>
 
-          <div class="group form">
+          <div class="form">
             <label class="field">
               <span class="field-label">Ключ API <span class="field-status" id="key-state"></span></span>
               <span class="input-wrap">
@@ -167,47 +143,48 @@
           </div>
 
           <div class="check">
-            <button class="btn btn-primary" id="test" type="button">Проверить</button>
+            <button class="btn-mark" id="test" type="button">Проверить</button>
             <span class="hint">Переведёт тестовую фразу</span>
           </div>
-          <figure class="preview" id="test-result" aria-live="polite" hidden>
+          <figure class="sheet preview" id="test-result" aria-live="polite" hidden>
             <p class="preview-before"><mark id="test-before"></mark></p>
             <p class="preview-after" id="test-after"></p>
           </figure>
         </section>
 
         <section class="view" id="view-general" role="tabpanel" aria-labelledby="tab-general" hidden>
-          <div class="group">
-            <label class="switch-row">
-              <span class="row-text">
-                <span class="row-title">Сочетания клавиш работают</span>
-                <span class="row-desc">Поставить на паузу можно и из меню в трее</span>
-              </span>
-              <input type="checkbox" class="switch" id="enabled" />
-            </label>
-            <label class="switch-row">
-              <span class="row-text">
-                <span class="row-title">Индикатор внизу экрана</span>
-                <span class="row-desc">Видно, что нейронка думает, и если что-то пошло не так</span>
-              </span>
-              <input type="checkbox" class="switch" id="show-hud" />
-            </label>
-            <label class="switch-row">
-              <span class="row-text">
-                <span class="row-title">Запускать вместе с системой</span>
-              </span>
-              <input type="checkbox" class="switch" id="autostart" />
-            </label>
-          </div>
+          <ul class="rows">
+            <li>
+              <label class="row">
+                <input type="checkbox" class="tick" id="enabled" />
+                <span class="row-text">
+                  <span class="row-title">Сочетания клавиш работают</span>
+                  <span class="row-desc">Поставить на паузу можно и из меню в трее</span>
+                </span>
+              </label>
+            </li>
+            <li>
+              <label class="row">
+                <input type="checkbox" class="tick" id="show-hud" />
+                <span class="row-text">
+                  <span class="row-title">Ярлычок внизу экрана</span>
+                  <span class="row-desc">Видно, что нейронка думает, и если что-то пошло не так</span>
+                </span>
+              </label>
+            </li>
+            <li>
+              <label class="row">
+                <input type="checkbox" class="tick" id="autostart" />
+                <span class="row-text">
+                  <span class="row-title">Запускать вместе с системой</span>
+                </span>
+              </label>
+            </li>
+          </ul>
 
-          <div class="group" id="ax-group" hidden>
-            <div class="switch-row">
-              <span class="row-text">
-                <span class="row-title">Универсальный доступ</span>
-                <span class="row-desc" id="ax-state"></span>
-              </span>
-              <button class="btn" id="ax-open-2" type="button">Открыть</button>
-            </div>
+          <div class="ax" id="ax-group" hidden>
+            <h2 class="title">Универсальный доступ</h2>
+            <p class="ax-text"><span id="ax-state"></span> <button class="link" id="ax-open-2" type="button">Открыть настройки macOS</button></p>
           </div>
 
           <p class="about">
