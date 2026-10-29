@@ -1,6 +1,6 @@
 use crate::{engine, state::AppState};
 use serde::Serialize;
-use std::sync::atomic::Ordering;
+use std::{collections::HashMap, sync::atomic::Ordering};
 use tauri::{plugin::TauriPlugin, AppHandle, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -33,8 +33,8 @@ pub fn apply(app: &AppHandle) {
     let shortcuts = app.global_shortcut();
     let _ = shortcuts.unregister_all();
 
-    let mut map = state.hotkeys.lock().unwrap();
-    map.clear();
+    // Built aside and swapped in at the end: no lock is held while the OS registers keys.
+    let mut map = HashMap::new();
     let mut errors = Vec::new();
     let settings = state.settings();
 
@@ -60,5 +60,6 @@ pub fn apply(app: &AppHandle) {
             }
         }
     }
+    *state.hotkeys.lock().unwrap() = map;
     *state.hotkey_errors.lock().unwrap() = errors;
 }

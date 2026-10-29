@@ -13,7 +13,13 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The Windows and macOS code (UI Automation, AX, clipboard) only compiles on
+    # its own system, so lint and test on all three.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Install Tauri system deps
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
@@ -33,6 +40,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: cargo fmt --check
+        if: runner.os == 'Linux'
         working-directory: src-tauri
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri

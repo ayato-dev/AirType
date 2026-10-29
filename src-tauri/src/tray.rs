@@ -4,7 +4,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager,
+    webview::PageLoadEvent,
+    AppHandle, Manager, WebviewWindowBuilder,
 };
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -56,10 +57,32 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Opens the settings window. It is created on demand and destroyed on close, so
+/// a web view doesn't sit in memory while the app only waits in the tray.
 pub fn show_settings(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    let handle = app.clone();
+    // Windows are built on the main thread; this may be called from the action thread.
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            return;
+        }
+        let Some(config) = handle.config().app.windows.iter().find(|w| w.label == "main").cloned() else {
+            return;
+        };
+        let built = WebviewWindowBuilder::from_config(&handle, &config).map(|builder| {
+            // Shown once the page has loaded, so there is no empty frame first.
+            builder.visible(false).on_page_load(|window, payload| {
+                if payload.event() == PageLoadEvent::Finished {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            })
+        });
+        if let Err(e) = built.and_then(WebviewWindowBuilder::build) {
+            eprintln!("airtype: settings window: {e}");
+        }
+    });
 }

@@ -6,6 +6,7 @@
 //! safe, else pasted; the user's clipboard is put back as it was.
 
 use crate::{
+    clipboard::Saved,
     config,
     field::{self, Focused, Replaced},
     hud,
@@ -60,23 +61,37 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
 
     input::wait_modifiers_released(Duration::from_millis(1500));
     let target = input::foreground();
-    let field = match field::focused() {
+    let terminal = input::terminal_focused();
+    let (field, select_all) = match field::focused() {
         Focused::Password => return Err("Это поле для пароля, его не трогаю".into()),
-        Focused::Text(snapshot) if !snapshot.text.trim().is_empty() => Some(snapshot),
-        Focused::Text(_) | Focused::Unknown => None,
+        // A terminal's "field" is its whole scrollback; never send or replace that.
+        Focused::Text(snapshot) if terminal && snapshot.whole => return Err(SELECT_IN_TERMINAL.into()),
+        Focused::Text(snapshot) if !snapshot.text.trim().is_empty() => (Some(snapshot), false),
+        Focused::Text(_) => (None, !terminal),
+        Focused::Unknown { select_all } => (None, select_all && !terminal),
     };
-    let mut clipboard = Clipboard::new().map_err(|e| format!("Буфер обмена недоступен: {e}"))?;
-    let saved = clipboard.get_text().ok();
 
-    let text = match &field {
-        Some(snapshot) => snapshot.text.clone(),
-        None => match grab_text(&mut clipboard) {
-            Some(text) => text,
-            None => {
-                restore(&mut clipboard, saved);
-                return Err("Не нашёл текст. Выдели его или поставь курсор в поле".into());
+    let mut clipboard = Clipboard::new().map_err(|e| format!("Буфер обмена недоступен: {e}"))?;
+    let (text, mut saved) = match &field {
+        Some(snapshot) => (snapshot.text.clone(), None),
+        None => {
+            // Ctrl+C in a Windows console with nothing selected interrupts the running program.
+            if terminal && cfg!(windows) {
+                return Err(SELECT_IN_TERMINAL.into());
             }
-        },
+            let saved = Saved::capture().ok_or(CLIPBOARD_BUSY)?;
+            match grab_text(&mut clipboard, select_all) {
+                Some(text) => (text, Some(saved)),
+                None => {
+                    saved.restore();
+                    return Err(if select_all {
+                        "Не нашёл текст. Выдели его или поставь курсор в поле".into()
+                    } else {
+                        "Выдели текст, с которым работать".into()
+                    });
+                }
+            }
+        }
     };
 
     if settings.show_hud {
@@ -94,8 +109,8 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
         Ok(output) => output,
         Err(e) => {
             // Read through the accessibility API, the clipboard was never touched.
-            if field.is_none() {
-                restore(&mut clipboard, saved);
+            if let Some(saved) = saved {
+                saved.restore();
             }
             return Err(e);
         }
@@ -116,26 +131,36 @@ fn run(app: &AppHandle, action_id: &str) -> Result<(), String> {
             }
             Replaced::Unsupported => {}
         }
+        saved = Some(Saved::capture().ok_or(CLIPBOARD_BUSY)?);
     }
     paste(&mut clipboard, output, saved)
 }
 
-fn paste(clipboard: &mut Clipboard, output: String, saved: Option<String>) -> Result<(), String> {
+const SELECT_IN_TERMINAL: &str = "В терминале сначала выдели текст";
+const CLIPBOARD_BUSY: &str = "Буфер обмена занят другой программой, попробуй ещё раз";
+
+fn paste(clipboard: &mut Clipboard, output: String, saved: Option<Saved>) -> Result<(), String> {
     set_private(clipboard, output).map_err(|e| format!("Не смог положить текст в буфер обмена: {e}"))?;
     thread::sleep(Duration::from_millis(40));
     input::press(Chord::Paste);
     // Apps read the clipboard a moment after Ctrl+V, so don't swap it back too early.
     thread::sleep(Duration::from_millis(350));
-    restore(clipboard, saved);
+    if let Some(saved) = saved {
+        saved.restore();
+    }
     Ok(())
 }
 
-/// Copies the selection; with nothing selected, takes the whole field.
-fn grab_text(clipboard: &mut Clipboard) -> Option<String> {
+/// Copies the selection; with nothing selected, takes the whole field when
+/// `select_all` says the focus is a field and not a page or a list.
+fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
     let _ = clipboard.clear();
     input::press(Chord::Copy);
     if let Some(text) = wait_for_text(clipboard, Duration::from_millis(400)) {
         return Some(text);
+    }
+    if !select_all {
+        return None;
     }
     input::press(Chord::SelectAll);
     thread::sleep(Duration::from_millis(60));
@@ -155,17 +180,6 @@ fn wait_for_text(clipboard: &mut Clipboard, timeout: Duration) -> Option<String>
             return None;
         }
         thread::sleep(Duration::from_millis(15));
-    }
-}
-
-fn restore(clipboard: &mut Clipboard, saved: Option<String>) {
-    match saved {
-        Some(text) => {
-            let _ = set_private(clipboard, text);
-        }
-        None => {
-            let _ = clipboard.clear();
-        }
     }
 }
 

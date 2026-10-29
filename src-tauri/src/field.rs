@@ -12,7 +12,11 @@ pub enum Focused {
     Password,
     Text(Snapshot),
     /// The app doesn't expose the field; use the keyboard and the clipboard.
-    Unknown,
+    /// `select_all` is false when the focus is plainly not a text field (a web
+    /// page, a list, a button): select-all there would grab the whole page.
+    Unknown {
+        select_all: bool,
+    },
 }
 
 pub enum Replaced {
@@ -106,6 +110,8 @@ mod imp {
         /// Inside a web page. There a paste goes through the page's own input
         /// handling; a value written over its head can leave the page out of step.
         web: bool,
+        /// Keeps an Electron app's tree on until the answer is written back.
+        _manual: ManualAccessibility,
     }
 
     fn get(element: &CFType, name: &'static str) -> Option<CFType> {
@@ -168,32 +174,86 @@ mod imp {
         false
     }
 
+    /// Roles that are never a text field. Select-all on them takes a whole page or list.
+    const NOT_TEXT: &[&str] = &[
+        "AXWebArea",
+        "AXGroup",
+        "AXList",
+        "AXTable",
+        "AXOutline",
+        "AXBrowser",
+        "AXScrollArea",
+        "AXButton",
+        "AXStaticText",
+        "AXImage",
+        "AXLink",
+        "AXRow",
+        "AXCell",
+        "AXMenu",
+        "AXMenuItem",
+    ];
+
+    /// Electron apps build their accessibility tree only when asked to, and a full
+    /// tree slows them down. So the switch is flipped only when the app shows no
+    /// focused element, and flipped back once the action is over.
+    struct ManualAccessibility(Option<CFType>);
+
+    impl ManualAccessibility {
+        fn enable(app: &CFType) -> Self {
+            let on = get(app, "AXManualAccessibility")
+                .and_then(|v| v.downcast::<CFBoolean>())
+                .is_some_and(bool::from);
+            if on || !set(app, "AXManualAccessibility", &CFBoolean::true_value().as_CFType()) {
+                return ManualAccessibility(None);
+            }
+            ManualAccessibility(Some(app.clone()))
+        }
+    }
+
+    impl Drop for ManualAccessibility {
+        fn drop(&mut self) {
+            if let Some(app) = &self.0 {
+                set(app, "AXManualAccessibility", &CFBoolean::false_value().as_CFType());
+            }
+        }
+    }
+
     pub fn focused() -> Focused {
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), TIMEOUT) };
 
-        // Electron apps build their accessibility tree only when asked to. The first
-        // hotkey in such an app may still miss it and go through the clipboard.
-        if let Some(app) = get(&system, "AXFocusedApplication") {
-            set(&app, "AXManualAccessibility", &CFBoolean::true_value().as_CFType());
+        let mut manual = ManualAccessibility(None);
+        let mut element = get(&system, "AXFocusedUIElement");
+        if element.is_none() {
+            if let Some(app) = get(&system, "AXFocusedApplication") {
+                manual = ManualAccessibility::enable(&app);
+                if manual.0.is_some() {
+                    // Chromium builds the tree asynchronously.
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    element = get(&system, "AXFocusedUIElement");
+                }
+            }
         }
 
-        let Some(element) = get(&system, "AXFocusedUIElement") else { return Focused::Unknown };
+        let Some(element) = element else { return Focused::Unknown { select_all: true } };
         if string(&element, "AXSubrole").as_deref() == Some("AXSecureTextField") {
             return Focused::Password;
         }
+        let role = string(&element, "AXRole");
+        let unknown =
+            Focused::Unknown { select_all: !role.as_deref().is_some_and(|r| NOT_TEXT.contains(&r)) };
         // Text you can edit has a selection range; buttons, lists and pages don't.
-        let Some(value) = string(&element, "AXValue") else { return Focused::Unknown };
+        let Some(value) = string(&element, "AXValue") else { return unknown };
         if !has_range(&element, "AXSelectedTextRange") {
-            return Focused::Unknown;
+            return unknown;
         }
 
         let selected = string(&element, "AXSelectedText").unwrap_or_default();
         if selected.is_empty() && !settable(&element, "AXValue") {
-            return Focused::Unknown;
+            return unknown;
         }
         let web = in_web_page(&element);
-        let field = Field { element, web };
+        let field = Field { element, web, _manual: manual };
         if selected.is_empty() {
             Focused::Text(Snapshot::new(value, true, field))
         } else {
@@ -250,7 +310,16 @@ mod imp {
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationElement, IUIAutomationTextPattern,
-        IUIAutomationValuePattern, UIA_TextPatternId, UIA_ValuePatternId,
+        IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_CalendarControlTypeId,
+        UIA_CheckBoxControlTypeId, UIA_DataGridControlTypeId, UIA_DataItemControlTypeId,
+        UIA_HeaderControlTypeId, UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId,
+        UIA_ImageControlTypeId, UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
+        UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId,
+        UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId, UIA_SliderControlTypeId,
+        UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId, UIA_TabControlTypeId,
+        UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId, UIA_TextPatternId,
+        UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeControlTypeId,
+        UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID,
     };
 
     /// Milliseconds to wait for an app that has stopped answering.
@@ -282,8 +351,10 @@ mod imp {
 
     pub fn focused() -> Focused {
         let com = Com::init();
-        let Some(automation) = automation() else { return Focused::Unknown };
-        let Ok(element) = (unsafe { automation.GetFocusedElement() }) else { return Focused::Unknown };
+        let Some(automation) = automation() else { return Focused::Unknown { select_all: true } };
+        let Ok(element) = (unsafe { automation.GetFocusedElement() }) else {
+            return Focused::Unknown { select_all: true };
+        };
         if unsafe { element.CurrentIsPassword() }.is_ok_and(|password| password.as_bool()) {
             return Focused::Password;
         }
@@ -294,8 +365,53 @@ mod imp {
             Some(text) if !text.is_empty() => Focused::Text(Snapshot::new(text, false, field)),
             _ => match whole_text(&field.element) {
                 Some(text) => Focused::Text(Snapshot::new(text, true, field)),
-                None => Focused::Unknown,
+                None => Focused::Unknown { select_all: may_be_text(&field.element) },
             },
+        }
+    }
+
+    /// False for controls that are plainly not text, and for read-only documents
+    /// such as a web page (browsers expose the page's URL as a read-only value).
+    fn may_be_text(element: &IUIAutomationElement) -> bool {
+        const NOT_TEXT: &[UIA_CONTROLTYPE_ID] = &[
+            UIA_ButtonControlTypeId,
+            UIA_CalendarControlTypeId,
+            UIA_CheckBoxControlTypeId,
+            UIA_DataGridControlTypeId,
+            UIA_DataItemControlTypeId,
+            UIA_HeaderControlTypeId,
+            UIA_HeaderItemControlTypeId,
+            UIA_HyperlinkControlTypeId,
+            UIA_ImageControlTypeId,
+            UIA_ListControlTypeId,
+            UIA_ListItemControlTypeId,
+            UIA_MenuBarControlTypeId,
+            UIA_MenuControlTypeId,
+            UIA_MenuItemControlTypeId,
+            UIA_ProgressBarControlTypeId,
+            UIA_RadioButtonControlTypeId,
+            UIA_ScrollBarControlTypeId,
+            UIA_SliderControlTypeId,
+            UIA_SplitButtonControlTypeId,
+            UIA_StatusBarControlTypeId,
+            UIA_TabControlTypeId,
+            UIA_TabItemControlTypeId,
+            UIA_TableControlTypeId,
+            UIA_TextControlTypeId,
+            UIA_TitleBarControlTypeId,
+            UIA_ToolBarControlTypeId,
+            UIA_TreeControlTypeId,
+            UIA_TreeItemControlTypeId,
+        ];
+        unsafe {
+            if element.CurrentControlType().is_ok_and(|kind| NOT_TEXT.contains(&kind)) {
+                return false;
+            }
+            let read_only = element
+                .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                .and_then(|value| value.CurrentIsReadOnly())
+                .is_ok_and(|read_only| read_only.as_bool());
+            !read_only
         }
     }
 
@@ -364,7 +480,7 @@ mod imp {
     pub struct Field;
 
     pub fn focused() -> Focused {
-        Focused::Unknown
+        Focused::Unknown { select_all: true }
     }
 
     pub fn current(_field: &Field, _whole: bool) -> Option<String> {

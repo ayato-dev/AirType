@@ -41,6 +41,8 @@ interface UiState {
   settings: Settings;
   keys: Record<Provider, boolean>;
   hotkeyErrors: HotkeyError[];
+  /** The settings file couldn't be read and was set aside. */
+  notice: string | null;
   platform: string;
   accessibility: boolean;
   autostart: boolean;
@@ -66,8 +68,8 @@ const PROVIDER_TEXT: Record<
   anthropic: {
     hint: "Ключ берётся в console.anthropic.com, раздел API keys.",
     key: "sk-ant-…",
-    model: "claude-opus-5-5",
-    modelHint: "Opus 5.5 пишет лучше всех, Haiku 5.5 отвечает быстрее и стоит дешевле.",
+    model: "claude-haiku-5-5",
+    modelHint: "Haiku 5.5 отвечает быстрее всех и стоит дешевле, Opus 5.5 пишет лучше всех.",
     url: "https://api.anthropic.com",
     urlHint: "Пусто значит официальный api.anthropic.com. Для прокси укажи адрес без /v1.",
   },
@@ -170,6 +172,11 @@ async function save() {
   window.clearTimeout(saveTimer);
   try {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("save_settings", { settings });
+    // The new file is written, so the remark about the old one is done.
+    if (ui.notice) {
+      ui.notice = null;
+      renderNotes();
+    }
     refreshActionMeta();
   } catch (e) {
     complain("Не сохранилось.", e);
@@ -240,6 +247,7 @@ function openAccessibility() {
 function currentNotes(): Note[] {
   const notes: Note[] = [];
   if (complaint) notes.push(complaint);
+  if (ui.notice) notes.push({ text: ui.notice, flag: "не прочитался" });
   // On the model tab the key field is right there, a remark about it would only repeat it.
   if (requiresKey() && !ui.keys[settings.provider] && view !== "model") {
     notes.push({
