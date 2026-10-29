@@ -105,8 +105,14 @@ function button(className: string, label: string, onClick: () => void): HTMLButt
   return b;
 }
 
-function dot(): HTMLElement {
-  return el("span", "dot", "·");
+function comma(): HTMLElement {
+  return el("span", "plain comma", ",");
+}
+
+// The verbs after the first read on in the sentence, so they start in lower case
+// (an abbreviation like "SEO" stays as it is).
+function inSentence(name: string): string {
+  return name.length > 1 && name[1] === name[1].toLowerCase() ? name[0].toLowerCase() + name.slice(1) : name;
 }
 
 /** A word in the sentence that can be changed: it opens its choices under the line. */
@@ -172,19 +178,16 @@ function selectionAsk(v: View): HTMLElement[] {
   const verbs = el("div", "verbs");
   verbs.setAttribute("role", "toolbar");
   const current = lang || autoTarget(v);
+  // One sentence: "Перевести на English, исправить, улучшить или вежливее".
+  const last = v.actions.length - 1;
   v.actions.forEach((action, i) => {
-    // The dot travels with the verb after it, so a line never starts with one.
     const group = el("span", "verb-group");
-    if (i > 0) group.append(dot());
-    if (action.id === "translate") {
-      group.append(
-        button("verb", "Перевести", () => ask({ action: "translate", lang: current, tone: "", request: "" })),
-        el("span", "plain", " на "),
-        word("lang", current),
-      );
-    } else {
-      group.append(button("verb", action.name || "Без названия", () => ask({ action: action.id, lang: current, tone: "", request: "" })));
-    }
+    if (i > 0 && i === last) group.append(el("span", "plain", "или "));
+    const name = action.id === "translate" ? "Перевести" : action.name || "Без названия";
+    group.append(button("verb", i > 0 ? inSentence(name) : name, () => ask({ action: action.id, lang: current, tone: "", request: "" })));
+    if (action.id === "translate") group.append(el("span", "plain", " на "), word("lang", current));
+    // The comma stays with the verb before it, so a line never starts with one.
+    if (i < last - 1) group.append(comma());
     verbs.append(group);
   });
 
@@ -241,7 +244,7 @@ function composeAsk(): HTMLElement[] {
     "sentence",
     el("span", "plain", "На "),
     word("composeLang", composeLang || "языке запроса"),
-    dot(),
+    comma(),
     word("tone", toneLabel),
   );
   const go = button("btn-mark", "Написать", submitCompose);
@@ -309,9 +312,8 @@ function result(v: View): HTMLElement[] {
     bar.append(main);
   }
   if (lastAsk && v.mode !== "answer") {
-    if (tools.childElementCount) tools.append(dot());
     tools.append(button("link", "Ещё раз", () => lastAsk && ask(lastAsk)));
-    tools.append(dot(), button("link", v.mode === "compose" ? "Изменить" : "Назад", back));
+    tools.append(button("link", v.mode === "compose" ? "Изменить" : "Назад", back));
   }
   bar.append(tools);
   parts.push(bar);
@@ -372,29 +374,12 @@ function focusMain() {
 }
 
 /** The window takes the panel's height; the app places it at the text and shows it. */
-// A verb that wrapped onto a new line drops the dot in front of it.
-function hideLeadingDots() {
-  let top = -1;
-  panel.querySelectorAll<HTMLElement>(".verb-group").forEach((group) => {
-    const dot = group.querySelector<HTMLElement>(":scope > .dot");
-    if (dot) dot.hidden = false;
-    const y = group.offsetTop;
-    if (dot && y > top + 4) {
-      dot.hidden = true;
-      // Without the dot it fits the line above after all: keep the dot there.
-      if (group.offsetTop < y) dot.hidden = false;
-    }
-    top = Math.max(top, group.offsetTop);
-  });
-}
-
 async function fit() {
   if (!view) return;
   const seq = view.seq;
   await document.fonts.ready;
   await new Promise(requestAnimationFrame);
   if (view?.seq !== seq) return;
-  hideLeadingDots();
   const height = Math.ceil(panel.getBoundingClientRect().height) + margin * 2;
   await invoke("panel_fit", { seq, height });
 }

@@ -533,7 +533,7 @@ function localRow(model: LocalModel): HTMLLIElement {
   title.append(name);
   const desc = document.createElement("span");
   desc.className = "row-desc";
-  desc.textContent = `${model.note} · ${size(model.size)}`;
+  desc.textContent = `${model.note}. ${size(model.size)} на диске`;
   main.append(title, desc);
   main.addEventListener("click", () => {
     if (!model.downloaded || chosen) return;

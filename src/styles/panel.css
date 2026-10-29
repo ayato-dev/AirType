@@ -163,14 +163,13 @@ button {
   white-space: pre;
 }
 
-.dot {
-  padding: 0 1px;
-  color: var(--faint);
-  font-weight: 500;
+/* A comma sits right on the word before it, past that word's marker padding. */
+.comma {
+  margin-left: -4px;
 }
 
-.verb-group > .dot {
-  margin-right: 4px;
+.sentence .comma {
+  margin-left: -8px;
 }
 
 .sentence {
@@ -335,7 +334,7 @@ textarea.request {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 6px;
+  gap: 4px 14px;
   font-size: var(--fs-meta);
 }
 
