@@ -10,6 +10,10 @@ use tauri::{menu::CheckMenuItem, AppHandle, Emitter, Manager, Wry};
 pub struct AppState {
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    /// The settings file couldn't be read or moved aside; don't overwrite it.
+    read_only: bool,
+    /// Why the settings file was not used, shown once in the settings window.
+    pub notice: Mutex<Option<String>>,
     pub http: reqwest::Client,
     /// An action is running; extra hotkey presses are ignored until it ends.
     pub busy: AtomicBool,
@@ -22,10 +26,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(settings: Settings, settings_path: PathBuf) -> Self {
+    pub fn new(loaded: config::Loaded, settings_path: PathBuf) -> Self {
         Self {
-            settings: Mutex::new(settings),
+            settings: Mutex::new(loaded.settings),
             settings_path,
+            read_only: loaded.read_only,
+            notice: Mutex::new(loaded.notice),
             http: crate::llm::http_client(),
             busy: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
@@ -40,8 +46,12 @@ impl AppState {
     }
 
     pub fn store(&self, settings: Settings) -> Result<(), String> {
+        if self.read_only {
+            return Err(format!("Не сохраняю, чтобы не затереть файл: {}", self.settings_path.display()));
+        }
         config::save(&self.settings_path, &settings)?;
         *self.settings.lock().unwrap() = settings;
+        *self.notice.lock().unwrap() = None;
         Ok(())
     }
 }

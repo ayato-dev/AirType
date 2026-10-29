@@ -3,6 +3,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Airtype",
         "url": "index.html",
         "width": 460,

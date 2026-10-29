@@ -1,3 +1,4 @@
+mod clipboard;
 mod commands;
 mod config;
 mod engine;
@@ -25,9 +26,9 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let settings = config::load(&settings_path);
-            let needs_setup = settings.requires_key() && config::api_key(settings.provider).is_none();
-            app.manage(AppState::new(settings, settings_path));
+            let loaded = config::load(&settings_path);
+            let notice = loaded.notice.is_some();
+            app.manage(AppState::new(loaded, settings_path));
 
             // X11 serves the clipboard from the process that filled it, and arboard stops
             // serving when its last instance is dropped. Keep one alive so the text put
@@ -41,16 +42,25 @@ pub fn run() {
             tray::create(handle)?;
             hotkeys::apply(handle);
 
-            if needs_setup || !input::accessibility_granted(false) {
-                tray::show_settings(handle);
-            }
+            // The keychain can wait on a macOS permission prompt; ask it off the main thread.
+            let handle = handle.clone();
+            std::thread::spawn(move || {
+                let settings = handle.state::<AppState>().settings();
+                let needs_setup = settings.requires_key() && config::api_key(settings.provider).is_none();
+                if notice || needs_setup || !input::accessibility_granted(false) {
+                    tray::show_settings(&handle);
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing settings only hides them; the app keeps living in the tray.
+            // Settings are destroyed on close and built again on demand; the HUD
+            // lives for the whole run and only hides.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() != "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![

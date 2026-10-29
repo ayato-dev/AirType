@@ -13,7 +13,13 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The Windows and macOS code (UI Automation, AX, clipboard) only compiles on
+    # its own system, so lint and test on all three.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Install Tauri system deps
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev
@@ -33,6 +40,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
       - run: cargo fmt --check
+        if: runner.os == 'Linux'
         working-directory: src-tauri
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
@@ -93,10 +101,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      # The installers are named after the app version, so a tag that doesn't
+      # match it would publish files with the wrong number.
+      - name: Tag matches the app version
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but tauri.conf.json says $version"
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          files: artifacts/**/*
+          name: Airtype ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.msi
+            artifacts/**/*.dmg
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb

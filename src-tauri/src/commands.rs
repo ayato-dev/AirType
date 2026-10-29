@@ -22,6 +22,8 @@ pub struct UiState {
     settings: Settings,
     keys: KeyStatus,
     hotkey_errors: Vec<HotkeyError>,
+    /// Why the settings file was set aside, if it was.
+    notice: Option<String>,
     platform: &'static str,
     /// Linux under Wayland, where hotkeys reach only X11 apps.
     wayland: bool,
@@ -30,21 +32,33 @@ pub struct UiState {
     version: String,
 }
 
+/// Keychain calls can block on a macOS permission prompt, so they never run on
+/// the main thread or on an async worker.
+async fn keychain<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(call).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
-pub fn get_state(app: AppHandle, state: State<'_, AppState>) -> UiState {
-    UiState {
+pub async fn get_state(app: AppHandle) -> Result<UiState, String> {
+    let keys = keychain(|| KeyStatus {
+        anthropic: config::api_key(Provider::Anthropic).is_some(),
+        openai: config::api_key(Provider::Openai).is_some(),
+    })
+    .await?;
+    let state = app.state::<AppState>();
+    let hotkey_errors = state.hotkey_errors.lock().unwrap().clone();
+    let notice = state.notice.lock().unwrap().clone();
+    Ok(UiState {
         settings: state.settings(),
-        keys: KeyStatus {
-            anthropic: config::api_key(Provider::Anthropic).is_some(),
-            openai: config::api_key(Provider::Openai).is_some(),
-        },
-        hotkey_errors: state.hotkey_errors.lock().unwrap().clone(),
+        keys,
+        hotkey_errors,
+        notice,
         platform: std::env::consts::OS,
         wayland: input::wayland(),
         accessibility: input::accessibility_granted(false),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         version: app.package_info().version.to_string(),
-    }
+    })
 }
 
 #[tauri::command]
@@ -53,8 +67,8 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<Vec<HotkeyErr
 }
 
 #[tauri::command]
-pub fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
-    config::set_api_key(provider, &key)
+pub async fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
+    keychain(move || config::set_api_key(provider, &key)).await?
 }
 
 /// Runs the first action on a sample phrase so the user can check key and model.
@@ -62,7 +76,8 @@ pub fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
 pub async fn test_connection(state: State<'_, AppState>, text: String) -> Result<String, String> {
     let settings = state.settings();
     let action = settings.actions.first().ok_or("Нет ни одного действия")?;
-    let api_key = config::api_key(settings.provider);
+    let provider = settings.provider;
+    let api_key = keychain(move || config::api_key(provider)).await?;
     if api_key.is_none() && settings.requires_key() {
         return Err("Сначала вставь ключ API".into());
     }
@@ -99,7 +114,8 @@ pub fn request_accessibility() -> bool {
     granted
 }
 
+/// Closes settings for good; the tray builds them again when needed.
 #[tauri::command]
 pub fn hide_settings(window: WebviewWindow) {
-    let _ = window.hide();
+    let _ = window.close();
 }

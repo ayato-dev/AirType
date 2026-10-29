@@ -13,6 +13,32 @@ const MAX_TOKENS: u32 = 16000;
 const FALLBACK_MODELS: &[&str] =
     &["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-fable-5", "claude-sonnet-5-5"];
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+/// A cut-off answer would replace the whole field with half of it.
+const TRUNCATED: &str = "Ответ не влез в лимит модели, поле не тронул. Возьми текст покороче";
+
+/// The key never travels in the clear: plain http is only for this computer
+/// (a local Ollama or LM Studio).
+fn check_transport(settings: &Settings, api_key: Option<&str>) -> Result<(), String> {
+    let base = match settings.provider {
+        Provider::Anthropic => settings.anthropic.base_url.trim(),
+        Provider::Openai => settings.openai.base_url.trim(),
+    };
+    if base.is_empty() || api_key.is_none() {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(base).map_err(|_| "Не понял адрес API в настройках".to_string())?;
+    let local = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if local => Ok(()),
+        _ => Err("Ключ API по http не отправляю: нужен https, http можно только для localhost".into()),
+    }
+}
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -43,6 +69,7 @@ pub async fn complete(
     text: &str,
 ) -> Result<String, String> {
     let user = format!("<text>\n{text}\n</text>");
+    check_transport(settings, api_key)?;
     let raw = match settings.provider {
         Provider::Anthropic => anthropic(client, settings, api_key, system, &user).await?,
         Provider::Openai => openai(client, settings, api_key, system, &user).await?,
@@ -87,8 +114,10 @@ async fn anthropic(
     }
 
     let response = send(request.json(&body)).await?;
-    if response["stop_reason"] == "refusal" {
-        return Err("Модель отказалась работать с этим текстом".into());
+    match response["stop_reason"].as_str() {
+        Some("refusal") => return Err("Модель отказалась работать с этим текстом".into()),
+        Some("max_tokens") => return Err(TRUNCATED.into()),
+        _ => {}
     }
     let text = response["content"]
         .as_array()
@@ -130,7 +159,11 @@ async fn openai(
         request = request.bearer_auth(key);
     }
     let response = send(request.json(&body)).await?;
-    Ok(response["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string())
+    let choice = &response["choices"][0];
+    if choice["finish_reason"] == "length" {
+        return Err(TRUNCATED.into());
+    }
+    Ok(choice["message"]["content"].as_str().unwrap_or_default().to_string())
 }
 
 async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
@@ -160,9 +193,15 @@ async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
     })
 }
 
-/// Strips wrappers some models echo back despite the instructions.
+/// Strips wrappers some models echo back despite the instructions, and the
+/// reasoning that local models (DeepSeek R1, Qwen 3 in Ollama) put before the answer.
 fn clean(raw: &str) -> String {
     let mut text = raw.trim();
+    for (open, close) in [("<think>", "</think>"), ("<thinking>", "</thinking>")] {
+        if let Some(rest) = text.strip_prefix(open) {
+            text = rest.find(close).map_or("", |end| rest[end + close.len()..].trim_start());
+        }
+    }
     text = text.strip_prefix("<text>").unwrap_or(text);
     text = text.strip_suffix("</text>").unwrap_or(text);
     text.trim().to_string()
@@ -177,6 +216,49 @@ mod tests {
         assert_eq!(clean("<text>\nHello\n</text>\n"), "Hello");
         assert_eq!(clean("  Привет  "), "Привет");
         assert_eq!(clean("a <text> b"), "a <text> b");
+        assert_eq!(clean("<think>\nhmm, translate\n</think>\n\nHello"), "Hello");
+        assert_eq!(clean("<thinking>x</thinking><text>Hi</text>"), "Hi");
+        // An unfinished reasoning block is no answer at all.
+        assert_eq!(clean("<think>still going"), "");
+        assert_eq!(clean("I <think> so"), "I <think> so");
+    }
+
+    fn openai_settings(base_url: &str) -> Settings {
+        Settings {
+            provider: Provider::Openai,
+            openai: crate::config::ProviderConfig { model: "m".into(), base_url: base_url.into() },
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn key_only_over_https_or_localhost() {
+        let ok = |url: &str, key: Option<&str>| check_transport(&openai_settings(url), key).is_ok();
+        assert!(ok("https://openrouter.ai/api/v1", Some("k")));
+        assert!(ok("http://localhost:11434/v1", Some("k")));
+        assert!(ok("http://127.0.0.1:1234/v1", Some("k")));
+        assert!(ok("http://[::1]:1234/v1", Some("k")));
+        assert!(ok("http://192.168.1.5:11434/v1", None));
+        assert!(!ok("http://192.168.1.5:11434/v1", Some("k")));
+        assert!(!ok("http://proxy.example.com", Some("k")));
+        assert!(!ok("http://localhost.example.com", Some("k")));
+        assert!(ok("", Some("k")));
+    }
+
+    #[test]
+    fn cut_off_answers_are_errors() {
+        let (url, _server) =
+            mock_server(r#"{"content":[{"type":"text","text":"Half"}],"stop_reason":"max_tokens"}"#);
+        let mut settings = Settings::default();
+        settings.anthropic.base_url = url;
+        let err = tauri::async_runtime::block_on(complete(&http_client(), &settings, Some("k"), "s", "t"));
+        assert_eq!(err.unwrap_err(), TRUNCATED);
+
+        let (url, _server) =
+            mock_server(r#"{"choices":[{"message":{"content":"Half"},"finish_reason":"length"}]}"#);
+        let err =
+            tauri::async_runtime::block_on(complete(&http_client(), &openai_settings(&url), None, "s", "t"));
+        assert_eq!(err.unwrap_err(), TRUNCATED);
     }
 
     /// Serves one canned JSON response and hands back the raw request it received.
@@ -239,7 +321,7 @@ mod tests {
         assert!(request.contains("x-api-key: sk-test"));
         assert!(request.contains("anthropic-version: 2026-10-21"));
         let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body["model"], "claude-opus-5-5");
+        assert_eq!(body["model"], "claude-haiku-5-5");
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["messages"][0]["content"], "<text>\nПривет, как дела?\n</text>");
         // Custom URL: no fallback beta for a proxy that may not know it.

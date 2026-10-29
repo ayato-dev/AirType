@@ -15,7 +15,7 @@ pub enum Chord {
     SelectAll,
 }
 
-pub use imp::{accessibility_granted, foreground, restore_focus, wayland, SUPPORTED};
+pub use imp::{accessibility_granted, foreground, restore_focus, terminal_focused, wayland, SUPPORTED};
 
 /// The hotkey's own modifiers are still held when it fires; pressing Ctrl+C on top
 /// of them would send e.g. Ctrl+Alt+C, so wait until the user lets go.
@@ -30,15 +30,138 @@ pub fn press(chord: Chord) {
     imp::send(chord);
 }
 
+/// Window classes of Windows consoles.
+#[cfg_attr(not(windows), allow(dead_code))]
+const TERMINAL_CLASSES: &[&str] =
+    &["ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "PuTTY", "VirtualConsoleClass"];
+
+/// Executables of Windows terminals and shells, lowercase, without `.exe`.
+#[cfg_attr(not(windows), allow(dead_code))]
+const TERMINAL_EXES: &[&str] = &[
+    "windowsterminal",
+    "wt",
+    "openconsole",
+    "conhost",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "wsl",
+    "bash",
+    "wezterm-gui",
+    "alacritty",
+    "mintty",
+    "putty",
+    "kitty",
+    "tabby",
+    "hyper",
+    "conemu",
+    "conemu64",
+    "warp",
+    "ghostty",
+];
+
+/// Bundle ids of macOS terminals.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const TERMINAL_BUNDLES: &[&str] = &[
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "io.alacritty",
+    "com.github.wez.wezterm",
+    "dev.warp.Warp-Stable",
+    "dev.warp.Warp",
+    "com.mitchellh.ghostty",
+    "co.zeit.hyper",
+    "org.tabby",
+    "com.raphaelamorim.rio",
+];
+
+/// WM_CLASS names of X11 terminals, lowercase. They copy and paste with
+/// Ctrl+Shift+C/V; plain Ctrl+C would stop the running program.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const TERMINAL_WM_CLASSES: &[&str] = &[
+    "gnome-terminal",
+    "gnome-terminal-server",
+    "kgx",
+    "org.gnome.console",
+    "org.gnome.ptyxis",
+    "ptyxis",
+    "konsole",
+    "alacritty",
+    "kitty",
+    "tilix",
+    "terminator",
+    "xfce4-terminal",
+    "mate-terminal",
+    "lxterminal",
+    "qterminal",
+    "terminology",
+    "st-256color",
+    "org.wezfurlong.wezterm",
+    "com.mitchellh.ghostty",
+    "guake",
+    "yakuake",
+    "tilda",
+    "warp",
+];
+
+/// Old X terminals with no copy shortcut at all: Ctrl+Shift+C still sends ^C there.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const KEYLESS_TERMINAL_WM_CLASSES: &[&str] = &["xterm", "uxterm", "urxvt", "rxvt"];
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Terminal {
+    /// Copies and pastes with Ctrl+Shift+C/V.
+    Shifted,
+    /// Has no key that copies without interrupting the program.
+    Keyless,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn terminal_kind(class: &str) -> Option<Terminal> {
+    let class = class.to_ascii_lowercase();
+    if TERMINAL_WM_CLASSES.contains(&class.as_str()) {
+        Some(Terminal::Shifted)
+    } else if KEYLESS_TERMINAL_WM_CLASSES.contains(&class.as_str()) {
+        Some(Terminal::Keyless)
+    } else {
+        None
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_terminal_window(class: &str, exe_path: Option<&str>) -> bool {
+    if TERMINAL_CLASSES.contains(&class) {
+        return true;
+    }
+    let Some(path) = exe_path else { return false };
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path).to_ascii_lowercase();
+    let stem = file.strip_suffix(".exe").unwrap_or(&file);
+    TERMINAL_EXES.contains(&stem)
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_terminal_bundle(bundle_id: &str) -> bool {
+    TERMINAL_BUNDLES.contains(&bundle_id)
+}
+
 #[cfg(windows)]
 mod imp {
     use super::Chord;
     use std::mem::size_of;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
         VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
 
     pub const SUPPORTED: bool = true;
 
@@ -102,6 +225,35 @@ mod imp {
     pub fn wayland() -> bool {
         false
     }
+
+    /// A console or terminal has focus. There Ctrl+C without a selection stops
+    /// the running program instead of copying.
+    pub fn terminal_focused() -> bool {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut class = [0u16; 128];
+        let len = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+        let class = String::from_utf16_lossy(&class[..usize::try_from(len).unwrap_or(0)]);
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        super::is_terminal_window(&class, process_path(pid).as_deref())
+    }
+
+    fn process_path(pid: u32) -> Option<String> {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return None;
+            }
+            let mut path = [0u16; 1024];
+            let mut len = path.len() as u32;
+            let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut len);
+            CloseHandle(process);
+            (ok != 0).then(|| String::from_utf16_lossy(&path[..len as usize]))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -163,6 +315,13 @@ mod imp {
 
     pub fn restore_focus(_target: Target) {}
 
+    pub fn terminal_focused() -> bool {
+        objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .and_then(|app| app.bundleIdentifier())
+            .is_some_and(|id| super::is_terminal_bundle(&id.to_string()))
+    }
+
     /// Sending keystrokes needs the Accessibility permission. With `prompt`,
     /// macOS shows its own dialog that leads the user to the right switch.
     pub fn accessibility_granted(prompt: bool) -> bool {
@@ -181,11 +340,11 @@ mod imp {
 /// type into other windows, so there it works just for apps running under XWayland.
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::Chord;
+    use super::{terminal_kind, Chord, Terminal};
     use std::cell::OnceCell;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
-        ConnectionExt as _, KeyButMask, Keycode, Keysym, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
+        AtomEnum, ConnectionExt as _, KeyButMask, Keycode, Keysym, KEY_PRESS_EVENT, KEY_RELEASE_EVENT,
     };
     use x11rb::protocol::xtest::ConnectionExt as _;
     use x11rb::rust_connection::RustConnection;
@@ -199,6 +358,7 @@ mod imp {
     const XK_C: Keysym = 0x63;
     const XK_V: Keysym = 0x76;
     const XK_CONTROL_L: Keysym = 0xffe3;
+    const XK_SHIFT_L: Keysym = 0xffe1;
 
     struct Display {
         conn: RustConnection,
@@ -252,15 +412,24 @@ mod imp {
             Chord::SelectAll => XK_A,
         };
         with_display(|d| {
+            let shift = match focused_terminal(d) {
+                None => false,
+                Some(Terminal::Shifted) => !matches!(chord, Chord::SelectAll),
+                // Any copy key there would stop the running program.
+                Some(Terminal::Keyless) => return,
+            };
             let (Some(ctrl), Some(key)) = (keycode(&d.conn, XK_CONTROL_L), keycode(&d.conn, keysym)) else {
                 return;
             };
-            let presses = [
-                (KEY_PRESS_EVENT, ctrl),
-                (KEY_PRESS_EVENT, key),
-                (KEY_RELEASE_EVENT, key),
-                (KEY_RELEASE_EVENT, ctrl),
-            ];
+            let mut held = vec![ctrl];
+            if shift {
+                held.extend(keycode(&d.conn, XK_SHIFT_L));
+            }
+            let presses = held
+                .iter()
+                .map(|&code| (KEY_PRESS_EVENT, code))
+                .chain([(KEY_PRESS_EVENT, key), (KEY_RELEASE_EVENT, key)])
+                .chain(held.iter().rev().map(|&code| (KEY_RELEASE_EVENT, code)));
             for (kind, code) in presses {
                 let _ = d.conn.xtest_fake_input(kind, code, x11rb::CURRENT_TIME, d.root, 0, 0, 0);
             }
@@ -277,6 +446,32 @@ mod imp {
 
     pub fn accessibility_granted(_prompt: bool) -> bool {
         true
+    }
+
+    /// A terminal has focus: there Ctrl+C stops the running program.
+    pub fn terminal_focused() -> bool {
+        let mut terminal = false;
+        with_display(|d| terminal = focused_terminal(d).is_some());
+        terminal
+    }
+
+    fn focused_terminal(d: &Display) -> Option<Terminal> {
+        let window = active_window(d)?;
+        let class = d
+            .conn
+            .get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+            .ok()?
+            .reply()
+            .ok()?;
+        // WM_CLASS is "instance\0class\0".
+        class.value.split(|&b| b == 0).find_map(|name| std::str::from_utf8(name).ok().and_then(terminal_kind))
+    }
+
+    fn active_window(d: &Display) -> Option<u32> {
+        let atom = d.conn.intern_atom(true, b"_NET_ACTIVE_WINDOW").ok()?.reply().ok()?.atom;
+        let reply = d.conn.get_property(false, d.root, atom, AtomEnum::WINDOW, 0, 1).ok()?.reply().ok()?;
+        let window = reply.value32()?.next();
+        window.filter(|&window| window != 0)
     }
 
     pub fn wayland() -> bool {
@@ -305,5 +500,31 @@ mod imp {
     }
     pub fn wayland() -> bool {
         false
+    }
+    pub fn terminal_focused() -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spots_terminals() {
+        assert!(is_terminal_window("CASCADIA_HOSTING_WINDOW_CLASS", None));
+        assert!(is_terminal_window("Chrome_WidgetWin_1", Some(r"C:\Program Files\PowerShell\7\pwsh.exe")));
+        assert!(is_terminal_window("x", Some(r"C:\Users\me\AppData\Local\WezTerm\WEZTERM-GUI.EXE")));
+        assert!(!is_terminal_window(
+            "Chrome_WidgetWin_1",
+            Some(r"C:\Program Files\Google\Chrome\chrome.exe")
+        ));
+        assert!(!is_terminal_window("Notepad", None));
+        assert!(is_terminal_bundle("com.googlecode.iterm2"));
+        assert!(!is_terminal_bundle("com.apple.TextEdit"));
+        assert_eq!(terminal_kind("gnome-terminal-server"), Some(Terminal::Shifted));
+        assert_eq!(terminal_kind("Alacritty"), Some(Terminal::Shifted));
+        assert_eq!(terminal_kind("XTerm"), Some(Terminal::Keyless));
+        assert_eq!(terminal_kind("firefox"), None);
     }
 }
