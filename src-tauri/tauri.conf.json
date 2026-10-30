@@ -81,7 +81,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5Nzc4MjhDNDAwQzFGRjkKUldUNUh3eEFqSUozS2JyMGRqbzZzOXUzWWtNWi9NcFlWSC9pbXUzUW4xYTROdExQWWpaU0c3bzIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVGNDVCRDc2RURFNUE4QzUKUldURnFPWHRkcjFGWC9PQlY1YVRLNlN6WDlWSVVuTXdGMUo4ZGoveGlhM3hhYTJtMW9kamJ1ZVgK",
       "endpoints": ["https://github.com/ayato-dev/AirType/releases/latest/download/latest.json"],
       "windows": {
         "installMode": "passive"
