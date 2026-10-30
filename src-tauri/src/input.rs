@@ -420,13 +420,16 @@ mod imp {
             Chord::Paste => KEY_V,
             Chord::SelectAll => KEY_A,
         };
-        let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+        // At the session level: a Command flag posted at the HID level stays in the
+        // system's modifier state once the key is up, and the next hotkey waits for
+        // a release that never comes.
+        let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else {
             return;
         };
         for down in [true, false] {
             if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) {
                 event.set_flags(CGEventFlags::CGEventFlagCommand);
-                event.post(CGEventTapLocation::HID);
+                event.post(CGEventTapLocation::Session);
             }
         }
     }
