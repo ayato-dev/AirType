@@ -18,8 +18,20 @@ pub enum Chord {
 }
 
 pub use imp::{
-    accessibility_granted, foreground, restore_focus, terminal_focused, wayland, Target, SUPPORTED,
+    accessibility_granted, foreground, front, mouse_down, restore_focus, terminal_focused, wayland, Target,
+    SUPPORTED,
 };
+
+/// What is in front, next to the window the text came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Front {
+    /// One of Airtype's windows.
+    Us,
+    /// The window the text came from, or a popup of its own.
+    Target,
+    /// Some other app or window.
+    Other,
+}
 
 /// Gives focus back to the app the text came from and waits until it has it.
 /// False when another window took over meanwhile: then typing or pasting would
@@ -38,11 +50,17 @@ pub fn return_to(target: Target) -> bool {
 
 /// The hotkey's own modifiers are still held when it fires; pressing Ctrl+C on top
 /// of them would send e.g. Ctrl+Alt+C, so wait until the user lets go.
-pub fn wait_modifiers_released(timeout: Duration) {
+/// False when they are still held after `timeout`: Ctrl+C sent now would reach
+/// the app as Ctrl+Alt+C or the like.
+pub fn wait_modifiers_released(timeout: Duration) -> bool {
     let start = Instant::now();
-    while imp::modifiers_down() && start.elapsed() < timeout {
+    while imp::modifiers_down() {
+        if start.elapsed() >= timeout {
+            return false;
+        }
         thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 pub fn press(chord: Chord) {
@@ -179,7 +197,7 @@ fn is_terminal_bundle(bundle_id: &str) -> bool {
 
 #[cfg(windows)]
 mod imp {
-    use super::Chord;
+    use super::{Chord, Front};
     use std::mem::size_of;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
@@ -187,10 +205,12 @@ mod imp {
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MBUTTON, VK_MENU, VK_RBUTTON,
+        VK_RWIN, VK_SHIFT,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        GA_ROOTOWNER,
     };
 
     pub const SUPPORTED: bool = true;
@@ -203,10 +223,33 @@ mod imp {
     const VK_C: VIRTUAL_KEY = 0x43;
     const VK_V: VIRTUAL_KEY = 0x56;
 
+    fn down(keys: &[VIRTUAL_KEY]) -> bool {
+        keys.iter().any(|&vk| unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0)
+    }
+
     pub fn modifiers_down() -> bool {
-        [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
-            .iter()
-            .any(|&vk| unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0)
+        down(&[VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN])
+    }
+
+    pub fn mouse_down() -> bool {
+        down(&[VK_LBUTTON, VK_RBUTTON, VK_MBUTTON])
+    }
+
+    /// `None` for the moment between two windows, when nothing is in front.
+    pub fn front(target: Target) -> Option<Front> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        Some(if pid == std::process::id() {
+            Front::Us
+        } else if hwnd as usize == target || unsafe { GetAncestor(hwnd, GA_ROOTOWNER) } as usize == target {
+            Front::Target
+        } else {
+            Front::Other
+        })
     }
 
     fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -318,7 +361,7 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::Chord;
+    use super::{Chord, Front};
     use core_foundation::base::TCFType;
     use core_foundation::boolean::CFBoolean;
     use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
@@ -348,10 +391,27 @@ mod imp {
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGEventSourceFlagsState(state_id: i32) -> u64;
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
     }
 
     pub fn modifiers_down() -> bool {
         unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) & MODIFIER_MASK != 0 }
+    }
+
+    /// Left, right or middle.
+    pub fn mouse_down() -> bool {
+        (0..3).any(|button| unsafe { CGEventSourceButtonState(HID_SYSTEM_STATE, button) })
+    }
+
+    /// Apps, not windows: the text came from the frontmost app.
+    pub fn front(target: Target) -> Option<Front> {
+        let pid = foreground();
+        Some(match pid {
+            0 => return None,
+            pid if pid as u32 == std::process::id() => Front::Us,
+            pid if pid == target => Front::Target,
+            _ => Front::Other,
+        })
     }
 
     pub fn send(chord: Chord) {
@@ -443,7 +503,7 @@ mod imp {
 /// type into other windows, so there it works just for apps running under XWayland.
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::{terminal_kind, Chord, Terminal};
+    use super::{terminal_kind, Chord, Front, Terminal};
     use std::cell::OnceCell;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
@@ -505,15 +565,44 @@ mod imp {
         Some(min + index as Keycode)
     }
 
-    pub fn modifiers_down() -> bool {
-        let held = KeyButMask::SHIFT | KeyButMask::CONTROL | KeyButMask::MOD1 | KeyButMask::MOD4;
+    fn held(keys: KeyButMask) -> bool {
         let mut down = false;
         with_display(|d| {
             if let Ok(Ok(reply)) = d.conn.query_pointer(d.root).map(|cookie| cookie.reply()) {
-                down = u16::from(reply.mask) & u16::from(held) != 0;
+                down = u16::from(reply.mask) & u16::from(keys) != 0;
             }
         });
         down
+    }
+
+    pub fn modifiers_down() -> bool {
+        held(KeyButMask::SHIFT | KeyButMask::CONTROL | KeyButMask::MOD1 | KeyButMask::MOD4)
+    }
+
+    pub fn mouse_down() -> bool {
+        held(KeyButMask::BUTTON1 | KeyButMask::BUTTON2 | KeyButMask::BUTTON3)
+    }
+
+    pub fn front(target: Target) -> Option<Front> {
+        let mut front = None;
+        with_display(|d| {
+            let Some(window) = active_window(d) else { return };
+            front = Some(if window == target {
+                Front::Target
+            } else if window_pid(d, window) == Some(std::process::id()) {
+                Front::Us
+            } else {
+                Front::Other
+            });
+        });
+        front
+    }
+
+    fn window_pid(d: &Display, window: u32) -> Option<u32> {
+        let atom = d.conn.intern_atom(true, b"_NET_WM_PID").ok()?.reply().ok()?.atom;
+        let reply = d.conn.get_property(false, window, atom, AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?;
+        let pid = reply.value32()?.next();
+        pid
     }
 
     pub fn send(chord: Chord) {
@@ -615,7 +704,7 @@ mod imp {
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod imp {
-    use super::Chord;
+    use super::{Chord, Front};
 
     pub const SUPPORTED: bool = false;
     pub const CAN_TYPE: bool = false;
@@ -631,6 +720,12 @@ mod imp {
 
     pub fn modifiers_down() -> bool {
         false
+    }
+    pub fn mouse_down() -> bool {
+        false
+    }
+    pub fn front(_target: Target) -> Option<Front> {
+        None
     }
     pub fn send(_chord: Chord) {}
     pub fn foreground() -> Target {

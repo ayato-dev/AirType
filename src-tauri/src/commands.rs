@@ -3,6 +3,7 @@ use crate::{
     hotkeys::{self, HotkeyError},
     hud, input, llm, local, panel,
     state::{self, AppState},
+    update,
 };
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -83,10 +84,18 @@ pub async fn test_connection(app: AppHandle, text: String) -> Result<String, Str
     let settings = app.state::<AppState>().settings();
     let action = settings.actions.first().ok_or("Нет ни одного действия")?;
     let prompt = llm::action_prompt(&settings, action, &text);
+    // One request at a time: a check must not run beside a hotkey's action.
+    if app.state::<AppState>().busy.swap(true, Ordering::SeqCst) {
+        return Err("Сейчас идёт другое действие, попробуй чуть позже".into());
+    }
     // Reads the keychain and may start the local model: off the async workers.
-    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
-        .await
-        .map_err(|e| e.to_string())?
+    let handle = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || llm::transform_text(&handle, &settings, &prompt, None))
+            .await
+            .map_err(|e| e.to_string());
+    app.state::<AppState>().busy.store(false, Ordering::SeqCst);
+    result?
 }
 
 /// Turns global hotkeys off while the settings window records a new combination.
@@ -139,6 +148,12 @@ pub async fn panel_run(app: AppHandle, ask: panel::Ask) -> Result<String, String
     panel::run(app, ask).await
 }
 
+/// The page dropped the answer it was waiting for ("Back").
+#[tauri::command]
+pub fn panel_cancel() {
+    panel::cancel_running();
+}
+
 #[tauri::command]
 pub fn panel_write(app: AppHandle, text: String) {
     panel::write(&app, text);
@@ -170,6 +185,8 @@ pub struct LocalModel {
 pub struct LocalStatus {
     models: Vec<LocalModel>,
     download: Option<local::Progress>,
+    /// The engine can run on the video card here.
+    gpu: bool,
 }
 
 #[tauri::command]
@@ -184,7 +201,7 @@ pub fn local_status(app: AppHandle) -> LocalStatus {
             downloaded: local::downloaded(&app, m),
         })
         .collect();
-    LocalStatus { models, download: local::progress() }
+    LocalStatus { models, download: local::progress(), gpu: local::HAS_GPU }
 }
 
 #[tauri::command]
@@ -204,8 +221,30 @@ pub async fn local_delete(app: AppHandle, model: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Closes settings for good; the tray builds them again when needed.
+/// Closes settings for good; the tray builds them again when needed. The page
+/// has saved by now, so this skips its close-requested handler.
 #[tauri::command]
 pub fn hide_settings(window: WebviewWindow) {
-    let _ = window.close();
+    let _ = window.destroy();
+}
+
+/// Cheap enough to poll while the user is in System Settings: no keychain.
+#[tauri::command]
+pub fn accessibility_status() -> bool {
+    input::accessibility_granted(false)
+}
+
+#[tauri::command]
+pub fn update_status() -> update::Status {
+    update::status()
+}
+
+#[tauri::command]
+pub async fn update_check(app: AppHandle) -> Result<Option<String>, String> {
+    update::check(&app, true).await
+}
+
+#[tauri::command]
+pub fn update_install(app: AppHandle) {
+    update::install(&app);
 }

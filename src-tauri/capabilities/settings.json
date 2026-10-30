@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "The settings window: the only one that touches keys, settings and the local model",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "allow-get-state",
+    "allow-save-settings",
+    "allow-set-api-key",
+    "allow-test-connection",
+    "allow-suspend-hotkeys",
+    "allow-set-autostart",
+    "allow-request-accessibility",
+    "allow-accessibility-status",
+    "allow-hide-settings",
+    "allow-local-status",
+    "allow-local-download",
+    "allow-local-cancel",
+    "allow-local-delete",
+    "allow-update-status",
+    "allow-update-check",
+    "allow-update-install"
+  ]
+}

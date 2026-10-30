@@ -14,7 +14,7 @@ use crate::{
     hud,
     input::{self, Chord, Target},
     llm, local, panel,
-    popup::Rect,
+    popup::Anchor,
     state::AppState,
     tray,
 };
@@ -57,23 +57,24 @@ fn run(app: &AppHandle, action_id: &str) -> Result<Ran, String> {
     let action = settings.actions.iter().find(|a| a.id == action_id).cloned().ok_or("Действие не найдено")?;
     preflight(app, &settings)?;
 
-    let cx = context();
+    let cx = context()?;
     hud::set_anchor(cx.anchor);
     let source = read(Scope::Field, cx.terminal)?.ok_or(NOTHING_FOUND)?;
     if settings.show_hud {
         hud::working(app, &action.id, &action.name);
     }
     let prompt = llm::action_prompt(&settings, &action, &source.text);
-    let output = llm::transform_text(app, &settings, &prompt)?;
+    let output = llm::transform_text(app, &settings, &prompt, None)?;
 
+    let anchor = source.anchor(cx.anchor);
     if source.editable == Some(false) {
-        panel::show_answer(app, source.text, output, None, cx.anchor, cx.target);
+        panel::show_answer(app, source.text, output, None, anchor, cx.target);
         return Ok(Ran::Shown);
     }
     match write(&source, &output, cx.target)? {
         Written::Done => Ok(Ran::Written),
         Written::Missed(why) => {
-            panel::show_answer(app, source.text, output, Some(why), cx.anchor, cx.target);
+            panel::show_answer(app, source.text, output, Some(why), anchor, cx.target);
             Ok(Ran::Shown)
         }
     }
@@ -105,12 +106,14 @@ pub struct Context {
     pub target: Target,
     pub terminal: bool,
     /// The selection, caret or field on screen, for the HUD and the panel to stand next to.
-    pub anchor: Option<Rect>,
+    pub anchor: Option<Anchor>,
 }
 
-pub fn context() -> Context {
-    input::wait_modifiers_released(Duration::from_millis(1500));
-    Context { target: input::foreground(), terminal: input::terminal_focused(), anchor: field::anchor() }
+pub fn context() -> Result<Context, String> {
+    if !input::wait_modifiers_released(Duration::from_millis(2000)) {
+        return Err("Отпусти клавиши сочетания, и всё сработает".into());
+    }
+    Ok(Context { target: input::foreground(), terminal: input::terminal_focused(), anchor: field::anchor() })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,13 @@ impl Source {
     /// Nothing was read; an answer goes in at the caret.
     pub fn caret() -> Self {
         Source { text: String::new(), snapshot: None, select_all: false, editable: None }
+    }
+
+    /// Where this text is on screen. Text copied with Ctrl+C may lie outside the
+    /// field that has focus, so a field rectangle is only a hint then.
+    pub fn anchor(&self, anchor: Option<Anchor>) -> Option<Anchor> {
+        let copied = self.snapshot.is_none() && !self.text.is_empty();
+        anchor.map(|a| if copied { a.copied() } else { a })
     }
 }
 
@@ -226,7 +236,9 @@ pub fn write(source: &Source, output: &str, target: Target) -> Result<Written, S
 fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
     let _ = clipboard.clear();
     input::press(Chord::Copy);
-    if let Some(text) = wait_for_text(clipboard, Duration::from_millis(400)) {
+    // Heavy apps (Electron, Office) can take a while to fill the clipboard; a copy
+    // that lands after the clipboard was put back would overwrite the user's.
+    if let Some(text) = wait_for_text(clipboard, COPY_WAIT) {
         return Some(text);
     }
     if !select_all {
@@ -235,8 +247,10 @@ fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
     input::press(Chord::SelectAll);
     thread::sleep(Duration::from_millis(60));
     input::press(Chord::Copy);
-    wait_for_text(clipboard, Duration::from_millis(400))
+    wait_for_text(clipboard, COPY_WAIT)
 }
+
+const COPY_WAIT: Duration = Duration::from_millis(700);
 
 fn wait_for_text(clipboard: &mut Clipboard, timeout: Duration) -> Option<String> {
     let start = Instant::now();

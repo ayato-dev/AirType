@@ -4,6 +4,10 @@
 //! backdrop goes flat grey on inactive windows, so they use the older acrylic
 //! accent that stays lit. macOS gets its glass from the window config; Linux has
 //! none and the page draws a solid sheet.
+//!
+//! The panel also fades in and out. Windows has no fade for a borderless popup,
+//! so its opacity is stepped by hand; macOS plays its own once asked to; on
+//! Linux the page fades the sheet it draws.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::WebviewWindow;
@@ -27,16 +31,41 @@ pub fn acrylic(window: &WebviewWindow) {
     imp::acrylic(window, dark);
 }
 
+/// Lets the window fade as it comes and goes. Once, when it is made.
+pub fn fading(window: &WebviewWindow) {
+    imp::fading(window);
+}
+
+/// Shows the window with a fade, or brings it back from fading out. Only one
+/// window fades: the panel.
+pub fn show(window: &WebviewWindow) {
+    imp::show(window);
+}
+
+/// Fades the window out and hides it.
+pub fn hide(window: &WebviewWindow) {
+    imp::hide(window);
+}
+
 #[cfg(windows)]
 mod imp {
-    use std::ffi::c_void;
+    use std::{
+        ffi::c_void,
+        sync::atomic::{AtomicU64, AtomicU8, Ordering},
+        thread,
+        time::Duration,
+    };
     use tauri::WebviewWindow;
     use windows_sys::core::BOOL;
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAK, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA,
+        WS_EX_LAYERED,
+    };
 
     const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
     const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
@@ -112,9 +141,117 @@ mod imp {
         };
         unsafe { set(hwnd, &mut data) };
     }
+
+    /// Bumped by every fade, so the one before stops where it is.
+    static FADE: AtomicU64 = AtomicU64::new(0);
+    /// The opacity right now, and the one the running fade goes to.
+    static ALPHA: AtomicU8 = AtomicU8::new(255);
+    static GOAL: AtomicU8 = AtomicU8::new(255);
+
+    const FRAME: Duration = Duration::from_millis(15);
+
+    pub fn fading(_window: &WebviewWindow) {}
+
+    /// Opacity works on layered windows only. Tao rewrites the styles whenever it
+    /// shows or hides the window, so the flag is put back each time.
+    fn set_alpha(hwnd: HWND, alpha: u8) {
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if style & WS_EX_LAYERED as isize == 0 {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED as isize);
+            }
+            SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+        }
+        ALPHA.store(alpha, Ordering::SeqCst);
+    }
+
+    fn cloak(hwnd: HWND, on: bool) {
+        let value: BOOL = on.into();
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAK as u32,
+                &value as *const _ as *const c_void,
+                size_of_val(&value) as u32,
+            );
+        }
+    }
+
+    /// Steps the opacity to `goal` on its own thread, easing out; `then` runs at the end
+    /// unless another fade has started meanwhile.
+    fn fade(
+        window: &WebviewWindow,
+        goal: u8,
+        frames: u32,
+        hold: u32,
+        then: impl FnOnce(&WebviewWindow) + Send + 'static,
+    ) {
+        let Some(hwnd) = hwnd(window) else { return };
+        let hwnd = hwnd as usize;
+        let generation = FADE.fetch_add(1, Ordering::SeqCst) + 1;
+        GOAL.store(goal, Ordering::SeqCst);
+        let from = f64::from(ALPHA.load(Ordering::SeqCst));
+        let window = window.clone();
+        thread::spawn(move || {
+            // A moment at the start for the page to draw itself in the shown window.
+            thread::sleep(FRAME * hold);
+            for frame in 1..=frames {
+                if FADE.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let t = f64::from(frame) / f64::from(frames);
+                let eased = 1.0 - (1.0 - t) * (1.0 - t);
+                set_alpha(hwnd as HWND, (from + (f64::from(goal) - from) * eased).round() as u8);
+                thread::sleep(FRAME);
+            }
+            if FADE.load(Ordering::SeqCst) == generation {
+                then(&window);
+            }
+        });
+    }
+
+    pub fn show(window: &WebviewWindow) {
+        let Some(hwnd) = hwnd(window) else {
+            let _ = window.show();
+            return;
+        };
+        if window.is_visible().unwrap_or(false) {
+            // Up already, or fading in: nothing to do. Fading out: come back from where it is.
+            if GOAL.load(Ordering::SeqCst) != 255 {
+                fade(window, 255, 6, 0, |_| {});
+            }
+            return;
+        }
+        // Shown while cloaked, so no frame of it slips out before it is see-through.
+        cloak(hwnd, true);
+        let _ = window.show();
+        set_alpha(hwnd, 0);
+        cloak(hwnd, false);
+        fade(window, 255, 9, 2, |_| {});
+    }
+
+    pub fn hide(window: &WebviewWindow) {
+        if hwnd(window).is_none() || !window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+        if GOAL.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        fade(window, 0, 6, 0, |window| {
+            // `show` runs on the main thread: checked there, a show that came in
+            // after the last frame can't be hidden by this fade.
+            let shown = window.clone();
+            let _ = window.run_on_main_thread(move || {
+                if GOAL.load(Ordering::SeqCst) == 0 {
+                    let _ = shown.hide();
+                }
+            });
+        });
+    }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 mod imp {
     use tauri::WebviewWindow;
 
@@ -123,4 +260,48 @@ mod imp {
     }
 
     pub fn acrylic(_window: &WebviewWindow, _dark: bool) {}
+
+    /// AppKit infers no animation for a borderless window; a utility window's is a short fade.
+    pub fn fading(window: &WebviewWindow) {
+        const UTILITY_WINDOW: isize = 4;
+        let Ok(ns_window) = window.ns_window() else { return };
+        let ns_window = ns_window as usize;
+        let _ = window.run_on_main_thread(move || unsafe {
+            let ns_window = &*(ns_window as *const objc2::runtime::AnyObject);
+            let _: () = objc2::msg_send![ns_window, setAnimationBehavior: UTILITY_WINDOW];
+        });
+    }
+
+    pub fn show(window: &WebviewWindow) {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+        }
+    }
+
+    pub fn hide(window: &WebviewWindow) {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+mod imp {
+    use tauri::WebviewWindow;
+
+    pub fn round(_window: &WebviewWindow) -> bool {
+        false
+    }
+
+    pub fn acrylic(_window: &WebviewWindow, _dark: bool) {}
+
+    pub fn fading(_window: &WebviewWindow) {}
+
+    pub fn show(window: &WebviewWindow) {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+        }
+    }
+
+    pub fn hide(window: &WebviewWindow) {
+        let _ = window.hide();
+    }
 }

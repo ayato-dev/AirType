@@ -5,21 +5,24 @@
 //!
 //! The hotkey's thread keeps the field it read and waits for the page: the
 //! accessibility objects behind it stay on the thread that made them.
+//!
+//! The panel belongs to the window it was opened over and goes away like a
+//! menu: Esc, a click outside it, or switching to another window closes it.
 
 use crate::{
     engine::{self, Scope, Source, Written},
-    glass, hud,
-    input::{self, Target},
+    glass, hotkeys, hud,
+    input::{self, Front, Target},
     llm,
-    popup::{self, Fallback, Rect},
+    popup::{self, Anchor, Fallback, Spot},
     state::AppState,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, Sender},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -62,7 +65,8 @@ struct Job {
     view: View,
     /// The hotkey's thread, waiting to write the answer; none for a bare answer.
     reply: Option<Sender<Reply>>,
-    anchor: Option<Rect>,
+    /// Decided when the panel opens: once it is up the mouse is over the panel itself.
+    spot: Spot,
     target: Target,
     /// Had focus once: losing it after that means the user went elsewhere.
     focused: bool,
@@ -71,6 +75,16 @@ struct Job {
 
 static JOB: Mutex<Option<Job>> = Mutex::new(None);
 static SEQ: AtomicU64 = AtomicU64::new(0);
+/// The request the page is waiting for; set to drop it.
+static RUNNING: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Drops the request in flight, so a closed panel or "Again" doesn't leave a
+/// paid request (or the local model) working for nobody.
+pub fn cancel_running() {
+    if let Some(cancel) = RUNNING.lock().unwrap().take() {
+        cancel.store(true, Ordering::SeqCst);
+    }
+}
 
 pub fn trigger(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -90,25 +104,21 @@ pub fn trigger(app: &AppHandle) {
 fn session(app: &AppHandle) -> Result<(), String> {
     let settings = app.state::<AppState>().settings();
     engine::preflight(app, &settings)?;
-    let cx = engine::context();
+    let cx = engine::context()?;
     hud::set_anchor(cx.anchor);
     let (mode, source) = match engine::read(Scope::Selection, cx.terminal)? {
         Some(source) => ("selection", source),
         None => ("compose", Source::caret()),
     };
+    // Refused now rather than after the user picks an action, and before a
+    // megabyte of text lands in the page.
+    llm::check_size(&settings, source.text.chars().count())?;
     let (sender, replies) = mpsc::channel();
     let writable = source.editable != Some(false);
-    let seq = open(
-        app,
-        mode,
-        source.text.clone(),
-        String::new(),
-        None,
-        writable,
-        Some(sender),
-        cx.anchor,
-        cx.target,
-    )?;
+    // Where the selection was; the answer that can't go in later stands there too.
+    let spot = popup::locate(app, source.anchor(cx.anchor), Fallback::Pointer);
+    let seq =
+        open(app, mode, source.text.clone(), String::new(), None, writable, Some(sender), spot, cx.target)?;
 
     let opened = Instant::now();
     loop {
@@ -117,7 +127,7 @@ fn session(app: &AppHandle) -> Result<(), String> {
                 return match engine::write(&source, &text, cx.target)? {
                     Written::Done => Ok(()),
                     Written::Missed(why) => {
-                        show_answer(app, source.text, text, Some(why), cx.anchor, cx.target);
+                        answer_at(app, source.text, text, Some(why), spot, cx.target);
                         Ok(())
                     }
                 };
@@ -142,11 +152,16 @@ pub fn show_answer(
     text: String,
     answer: String,
     note: Option<&str>,
-    anchor: Option<Rect>,
+    anchor: Option<Anchor>,
     target: Target,
 ) {
+    let spot = popup::locate(app, anchor, Fallback::Pointer);
+    answer_at(app, text, answer, note, spot, target);
+}
+
+fn answer_at(app: &AppHandle, text: String, answer: String, note: Option<&str>, spot: Spot, target: Target) {
     let note = note.map(str::to_string);
-    if let Err(e) = open(app, "answer", text, answer, note, false, None, anchor, target) {
+    if let Err(e) = open(app, "answer", text, answer, note, false, None, spot, target) {
         hud::error(app, &e);
     }
 }
@@ -160,7 +175,7 @@ fn open(
     note: Option<String>,
     writable: bool,
     reply: Option<Sender<Reply>>,
-    anchor: Option<Rect>,
+    spot: Spot,
     target: Target,
 ) -> Result<u64, String> {
     let settings = app.state::<AppState>().settings();
@@ -180,7 +195,9 @@ fn open(
         target_lang: settings.target_lang.trim().to_string(),
         secondary_lang: settings.secondary_lang.trim().to_string(),
     };
-    *JOB.lock().unwrap() = Some(Job { view, reply, anchor, target, focused: false, shown: false });
+    // A panel still waiting for an answer is replaced: nobody will see that answer.
+    cancel_running();
+    *JOB.lock().unwrap() = Some(Job { view, reply, spot, target, focused: false, shown: false });
     let window = window(app)?;
     // The theme may have changed since the last time.
     glass::acrylic(&window);
@@ -215,7 +232,9 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         color: None,
         interactive: false,
     });
-    builder.build().map_err(|e| format!("Панель не открылась: {e}"))
+    let window = builder.build().map_err(|e| format!("Панель не открылась: {e}"))?;
+    glass::fading(&window);
+    Ok(window)
 }
 
 pub fn view() -> Option<View> {
@@ -224,19 +243,88 @@ pub fn view() -> Option<View> {
 
 /// The page has laid itself out at this size (logical pixels): place and show.
 pub fn fit(app: &AppHandle, seq: u64, height: f64) {
-    let anchor = {
+    let (spot, target, first) = {
         let mut job = JOB.lock().unwrap();
         let Some(job) = job.as_mut().filter(|job| job.view.seq == seq) else { return };
+        let first = !job.shown;
         job.shown = true;
-        job.anchor
+        (job.spot, job.target, first)
     };
     let Some(window) = app.get_webview_window(LABEL) else { return };
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
-    popup::place(app, &window, WIDTH, height, anchor, Fallback::Pointer);
-    if !window.is_visible().unwrap_or(false) {
-        let _ = window.show();
+    popup::put(app, &window, WIDTH, height, spot);
+    glass::show(&window);
+    // The page refits on every line typed; taking focus each time would pull the
+    // app forward again and again.
+    if !window.is_focused().unwrap_or(false) {
+        let _ = window.set_focus();
     }
-    let _ = window.set_focus();
+    if first {
+        hotkeys::escape(app, true);
+        // Closed while Esc was being taken: its close found nothing to give back.
+        if !JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq) {
+            hotkeys::escape(app, false);
+            return;
+        }
+        watch(app, seq, target);
+    }
+}
+
+/// Closes the panel the way a menu closes: when another window comes to the
+/// front, when the user goes back to the app the text came from after being in
+/// the panel, or at a click anywhere outside it. Focus events alone miss the
+/// case where the panel never got the focus (Windows can refuse it).
+fn watch(app: &AppHandle, seq: u64, target: Target) {
+    let app = app.clone();
+    thread::spawn(move || {
+        let mut been_in_panel = false;
+        let mut pressed = input::mouse_down();
+        loop {
+            thread::sleep(Duration::from_millis(25));
+            if !JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq) {
+                return;
+            }
+            let away = match input::front(target) {
+                Some(Front::Us) => {
+                    been_in_panel = true;
+                    false
+                }
+                Some(Front::Target) => been_in_panel,
+                Some(Front::Other) => true,
+                None => false,
+            };
+            let down = input::mouse_down();
+            let clicked_outside = down && !pressed && !pointer_inside(&app);
+            pressed = down;
+            if away || clicked_outside {
+                close_shown(&app, seq);
+                return;
+            }
+        }
+    });
+}
+
+/// True when unsure, so a click is never taken for one outside by mistake.
+fn pointer_inside(app: &AppHandle) -> bool {
+    let Some(window) = app.get_webview_window(LABEL) else { return true };
+    let (Ok(at), Ok(size), Some((x, y))) =
+        (window.outer_position(), window.outer_size(), popup::pointer(app))
+    else {
+        return true;
+    };
+    // macOS: the window at its own screen's scale, the pointer at the primary's;
+    // both go back to points to compare.
+    let div = if popup::POINTS { window.scale_factor().unwrap_or(1.0) } else { 1.0 };
+    let (left, top) = (f64::from(at.x) / div, f64::from(at.y) / div);
+    let (right, bottom) = (left + f64::from(size.width) / div, top + f64::from(size.height) / div);
+    (left..right).contains(&x) && (top..bottom).contains(&y)
+}
+
+/// Esc, wherever the keyboard is: the page decides whether it closes a list or the panel.
+pub fn escape(app: &AppHandle) {
+    if JOB.lock().unwrap().is_some() {
+        let _ = app.emit_to(LABEL, "panel-escape", ());
+    }
 }
 
 /// The page's request to the model: an action on the selection, an instruction
@@ -258,7 +346,12 @@ pub struct Ask {
 }
 
 pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
-    let text = JOB.lock().unwrap().as_ref().map(|job| job.view.text.clone()).ok_or("Панель уже закрыта")?;
+    let (seq, text) = JOB
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|job| (job.view.seq, job.view.text.clone()))
+        .ok_or("Панель уже закрыта")?;
     let settings = app.state::<AppState>().settings();
     let prompt = match ask.action.as_str() {
         "compose" => {
@@ -281,9 +374,26 @@ pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
             llm::transform(&prompt, &target, &secondary, &text)
         }
     };
-    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
-        .await
-        .map_err(|e| e.to_string())?
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = RUNNING.lock().unwrap().replace(cancel.clone()) {
+        previous.store(true, Ordering::SeqCst);
+    }
+    // A close or "Back" before the flag was in place had nothing to cancel.
+    if !JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq) {
+        cancel_running();
+        return Err("Панель уже закрыта".into());
+    }
+    let flag = cancel.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        llm::transform_text(&app, &settings, &prompt, Some(&flag))
+    })
+    .await
+    .map_err(|e| e.to_string());
+    let mut running = RUNNING.lock().unwrap();
+    if running.as_ref().is_some_and(|current| Arc::ptr_eq(current, &cancel)) {
+        *running = None;
+    }
+    result?
 }
 
 /// The language picked in the panel becomes the target; the fallback for text
@@ -303,6 +413,7 @@ fn languages(picked: &str, target: &str, secondary: &str) -> (String, String) {
 
 /// Puts the answer in: back to the app first, then the hotkey's thread writes it.
 pub fn write(app: &AppHandle, text: String) {
+    cancel_running();
     let Some(job) = JOB.lock().unwrap().take() else { return };
     // While one of our windows is in front we may hand focus back; once it is
     // hidden, Windows would no longer let us.
@@ -316,6 +427,7 @@ pub fn write(app: &AppHandle, text: String) {
 /// Closes the panel. `restore` gives focus back to the app the text came from
 /// (Esc); after a click elsewhere the user is already where they want to be.
 pub fn close(app: &AppHandle, restore: bool) {
+    cancel_running();
     let Some(job) = JOB.lock().unwrap().take() else { return };
     if restore {
         input::restore_focus(job.target);
@@ -324,9 +436,24 @@ pub fn close(app: &AppHandle, restore: bool) {
     // Dropping the job drops its sender, which tells the hotkey's thread.
 }
 
+/// Closes the panel if it still shows this job: the user is elsewhere already.
+fn close_shown(app: &AppHandle, seq: u64) {
+    let job = {
+        let mut job = JOB.lock().unwrap();
+        if !job.as_ref().is_some_and(|job| job.view.seq == seq) {
+            return;
+        }
+        job.take()
+    };
+    cancel_running();
+    hide(app);
+    drop(job);
+}
+
 fn hide(app: &AppHandle) {
+    hotkeys::escape(app, false);
     if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
+        glass::hide(&window);
     }
 }
 

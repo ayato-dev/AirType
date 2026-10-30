@@ -23,6 +23,9 @@ pub struct AppState {
     pub hotkeys: Mutex<HashMap<u32, String>>,
     pub hotkey_errors: Mutex<Vec<HotkeyError>>,
     pub pause_item: Mutex<Option<CheckMenuItem<Wry>>>,
+    /// One change of the settings at a time: the settings window, the tray and a
+    /// finished download all save the whole set.
+    changing: Mutex<()>,
 }
 
 impl AppState {
@@ -38,6 +41,7 @@ impl AppState {
             hotkeys: Mutex::new(HashMap::new()),
             hotkey_errors: Mutex::new(Vec::new()),
             pause_item: Mutex::new(None),
+            changing: Mutex::new(()),
         }
     }
 
@@ -59,6 +63,21 @@ impl AppState {
 /// Saves new settings and brings hotkeys, tray and windows in line with them.
 pub fn apply_settings(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyError>, String> {
     let state = app.state::<AppState>();
+    let _changing = state.changing.lock().unwrap();
+    apply(app, settings)
+}
+
+/// Changes one thing in the current settings, so a save made meanwhile isn't undone.
+pub fn update_settings(app: &AppHandle, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _changing = state.changing.lock().unwrap();
+    let mut settings = state.settings();
+    change(&mut settings);
+    apply(app, settings).map(drop)
+}
+
+fn apply(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyError>, String> {
+    let state = app.state::<AppState>();
     let old = state.settings();
     state.store(settings.clone())?;
 
@@ -70,13 +89,24 @@ pub fn apply_settings(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyE
             let _ = item.set_checked(settings.paused);
         }
     }
+    // Video memory comes back at once; the next answer starts the model where it now belongs.
+    // Off a thread: a model that is still loading holds the server for a while.
+    if old.local.gpu != settings.local.gpu {
+        std::thread::spawn(crate::local::release);
+    }
     let _ = app.emit_to("main", "settings-changed", &settings);
     let errors = state.hotkey_errors.lock().unwrap().clone();
     Ok(errors)
 }
 
 pub fn set_paused(app: &AppHandle, paused: bool) {
-    let mut settings = app.state::<AppState>().settings();
-    settings.paused = paused;
-    let _ = apply_settings(app, settings);
+    // The menu item has already ticked itself; if the change didn't hold, it
+    // must show what does.
+    if update_settings(app, |settings| settings.paused = paused).is_err() {
+        let state = app.state::<AppState>();
+        let item = state.pause_item.lock().unwrap().clone();
+        if let Some(item) = item {
+            let _ = item.set_checked(state.settings().paused);
+        }
+    }
 }

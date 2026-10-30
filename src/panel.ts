@@ -406,6 +406,8 @@ async function ask(next: Ask) {
 
 function back() {
   run++;
+  // Nobody waits for that answer any more, so it shouldn't keep running (or cost money).
+  if (phase === "working") void invoke("panel_cancel");
   phase = "ask";
   render();
 }
@@ -450,18 +452,28 @@ async function load() {
   request = "";
   copied = false;
   render();
+  // A new panel comes up from just below; the window fades along with it.
+  panel.classList.remove("enter");
+  void panel.offsetWidth;
+  panel.classList.add("enter");
+}
+
+/** Esc closes an open list first, then the panel. */
+function escape() {
+  if (!view) return;
+  if (picking) {
+    picking = null;
+    render();
+  } else {
+    close(true);
+  }
 }
 
 window.addEventListener("keydown", (e) => {
   if (!view) return;
   if (e.key === "Escape") {
     e.preventDefault();
-    if (picking) {
-      picking = null;
-      render();
-    } else {
-      close(true);
-    }
+    escape();
     return;
   }
   const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -488,4 +500,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("focus", focusMain);
 
 void listen<number>("panel-open", () => void load());
+// While the panel is up the app takes Esc for itself, so it works even when the
+// keyboard is still in the app underneath.
+void listen("panel-escape", escape);
 void load();

@@ -5,18 +5,18 @@
 //! The server starts on the first request and quits after ten idle minutes, so
 //! the gigabyte or two it takes is only held while the user actually works.
 
-use crate::state::{self, AppState};
+use crate::state;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, Once,
+        Condvar, Mutex, Once,
     },
     thread,
     time::{Duration, Instant},
@@ -136,7 +136,9 @@ const SERVER_EXE: &str = if cfg!(windows) { "llama-server.exe" } else { "llama-s
 fn find_server(dir: &Path) -> Option<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir).ok()?.flatten() {
+        // A folder that can't be read just has no server in it.
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
@@ -210,9 +212,7 @@ pub fn download(app: &AppHandle, id: &str) -> Result<(), String> {
             Err(e) => ("error", Some(e)),
         };
         if stage == "done" {
-            let mut settings = app.state::<AppState>().settings();
-            settings.local.model = model.id.into();
-            let _ = state::apply_settings(&app, settings);
+            let _ = state::update_settings(&app, |settings| settings.local.model = model.id.into());
         }
         report(&app, Progress { model: model.id.into(), stage, done: 0, total: 0, message });
     });
@@ -290,6 +290,9 @@ fn fetch(
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 1 << 20];
         loop {
+            if CANCEL.load(Ordering::SeqCst) {
+                return Err("cancelled".into());
+            }
             let n = file.read(&mut buf).map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
@@ -439,10 +442,14 @@ pub fn delete(app: &AppHandle, id: &str) -> Result<(), String> {
     if DOWNLOAD.lock().unwrap().as_ref().is_some_and(|p| p.model == id) {
         return Err("Сначала останови загрузку".into());
     }
-    let mut server = SERVER.lock().unwrap();
-    if server.as_ref().is_some_and(|s| s.model == id) {
-        stop(&mut server);
+    let mut slot = SERVER.lock().unwrap();
+    while slot.starting {
+        slot = READY.wait(slot).unwrap();
     }
+    if slot.server.as_ref().is_some_and(|s| s.model == id) {
+        stop(&mut slot.server);
+    }
+    drop(slot);
     let path = model_path(app, model)?;
     for file in [path.clone(), path.with_extension("gguf.part")] {
         match fs::remove_file(&file) {
@@ -460,85 +467,188 @@ struct Server {
     child: Child,
     port: u16,
     model: String,
+    /// The model sits in video memory.
+    gpu: bool,
     used: Instant,
+    /// Holds the process id, so the next run can stop a server this one left behind.
+    pid_file: PathBuf,
 }
 
-static SERVER: Mutex<Option<Server>> = Mutex::new(None);
+/// The running server, and whether one is being started right now. The lock is
+/// held only to look and to swap: loading a model takes up to two minutes, and
+/// quitting, the idle timer and deleting a model must not wait for that.
+struct Slot {
+    server: Option<Server>,
+    starting: bool,
+}
+
+static SERVER: Mutex<Slot> = Mutex::new(Slot { server: None, starting: false });
+/// Rung when a start is over, whichever way it went.
+static READY: Condvar = Condvar::new();
+/// The app is quitting: a start in progress gives up and stops its process.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 const IDLE: Duration = Duration::from_secs(10 * 60);
 
 fn stop(server: &mut Option<Server>) {
     if let Some(mut s) = server.take() {
         let _ = s.child.kill();
         let _ = s.child.wait();
+        let _ = fs::remove_file(&s.pid_file);
     }
 }
 
-/// Stops the server; called when the app quits.
+/// Stops the server; called when the app quits. A start in progress sees
+/// `QUITTING` within a quarter of a second and stops its own process.
 pub fn shutdown() {
-    stop(&mut SERVER.lock().unwrap());
+    QUITTING.store(true, Ordering::SeqCst);
+    let mut slot = SERVER.lock().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while slot.starting {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        slot = READY.wait_timeout(slot, left).unwrap().0;
+    }
+    stop(&mut slot.server);
+}
+
+/// Stops the server now, to start again on the next request. Unlike
+/// `shutdown`, the app goes on: a start in progress is let finish first.
+pub fn release() {
+    let mut slot = SERVER.lock().unwrap();
+    while slot.starting {
+        slot = READY.wait(slot).unwrap();
+    }
+    stop(&mut slot.server);
 }
 
 /// Marks the server as just used, so the idle timer starts over.
 pub fn touch() {
-    if let Some(server) = SERVER.lock().unwrap().as_mut() {
+    if let Some(server) = SERVER.lock().unwrap().server.as_mut() {
         server.used = Instant::now();
     }
 }
 
 /// The address of a running server with the model, starting it if needed.
-pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
+/// `gpu` is the user's choice; the GPU is used only where it also works.
+pub fn ensure(app: &AppHandle, id: &str, gpu: bool) -> Result<String, String> {
     let model = model(id).ok_or("Выбери модель в настройках")?;
-    let mut server = SERVER.lock().unwrap();
-    if let Some(s) = server.as_mut() {
-        if s.model == model.id && matches!(s.child.try_wait(), Ok(None)) {
+    let mut slot = SERVER.lock().unwrap();
+    // Another request is starting it: wait instead of starting a second one.
+    while slot.starting {
+        slot = READY.wait(slot).unwrap();
+    }
+    // Read after the wait: that start may have just found the GPU unusable.
+    let gpu = gpu && GPU.load(Ordering::SeqCst);
+    if let Some(s) = slot.server.as_mut() {
+        if s.model == model.id && s.gpu == gpu && matches!(s.child.try_wait(), Ok(None)) {
             s.used = Instant::now();
             return Ok(address(s.port));
         }
-        stop(&mut server);
     }
+    stop(&mut slot.server);
+    if QUITTING.load(Ordering::SeqCst) {
+        return Err(QUIT.into());
+    }
+    slot.starting = true;
+    drop(slot);
+
+    let started = launch(app, model, gpu);
+
+    let mut slot = SERVER.lock().unwrap();
+    slot.starting = false;
+    READY.notify_all();
+    let mut s = started?;
+    if QUITTING.load(Ordering::SeqCst) {
+        // `shutdown` has been and gone; nobody else would stop this one.
+        stop(&mut Some(s));
+        return Err(QUIT.into());
+    }
+    s.used = Instant::now();
+    let port = s.port;
+    slot.server = Some(s);
+    drop(slot);
+    watch_idle();
+    Ok(address(port))
+}
+
+const QUIT: &str = "Airtype закрывается";
+const DIED: &str = "Модель не запустилась. Что пошло не так, написано в server.log в папке с моделями";
+
+/// Starts the server for the model: on the GPU first, and on the processor when
+/// the GPU build can't load it, after which the rest of the run skips the GPU.
+fn launch(app: &AppHandle, model: &'static Model, gpu: bool) -> Result<Server, String> {
     if !downloaded(app, model) {
         return Err("Сначала скачай модель в настройках, раздел «Модель»".into());
     }
+    let root = root(app)?;
+    reap_orphan(&root);
     let exe = runtime_dir(app)
         .ok()
         .and_then(|dir| find_server(&dir))
         .ok_or("Сначала скачай модель в настройках")?;
     let model_file = model_path(app, model)?;
-    let log = root(app).ok().map(|dir| dir.join("server.log"));
-
-    // The GPU first; a driver that can't take the model gets the CPU instead,
-    // and the next starts skip the GPU for the rest of the run.
-    let mut s = None;
-    if GPU.load(Ordering::SeqCst) {
-        match start(&exe, &model_file, log.as_deref(), true) {
-            Ok(started) => s = Some(started),
-            Err(_) => GPU.store(false, Ordering::SeqCst),
+    // One log per start: the GPU attempt's reasons stay above the processor's.
+    let log = root.join("server.log");
+    let mut fresh_log = true;
+    let mut gpu = gpu;
+    // A port taken in the moment between finding it free and the server binding it.
+    let mut port_retries = 2;
+    loop {
+        let result = start(&exe, &model_file, &log, fresh_log, gpu);
+        fresh_log = false;
+        match result {
+            Ok(mut s) => {
+                s.model = model.id.into();
+                return Ok(s);
+            }
+            Err(Failed::Port) if port_retries > 0 => port_retries -= 1,
+            // A driver that can't load the model, or stalls on it: the processor can.
+            Err(Failed::Exited | Failed::Slow) if gpu => {
+                GPU.store(false, Ordering::SeqCst);
+                gpu = false;
+            }
+            Err(Failed::Port | Failed::Exited) => return Err(DIED.into()),
+            Err(Failed::Slow) => return Err("Модель слишком долго загружается".into()),
+            Err(Failed::Other(message)) => return Err(message),
         }
     }
-    let mut s = match s {
-        Some(s) => s,
-        None => start(&exe, &model_file, log.as_deref(), false)?,
-    };
-    s.model = model.id.into();
-    let port = s.port;
-    s.used = Instant::now();
-    *server = Some(s);
-    watch_idle();
-    Ok(address(port))
 }
 
-/// Whether to offload the model to the GPU. Only builds that have one to
-/// offload to; cleared after the GPU build failed to load the model.
-static GPU: AtomicBool = AtomicBool::new(cfg!(any(
+/// This build of the engine can use the video card: Vulkan or Metal.
+pub const HAS_GPU: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(any(windows, target_os = "linux"), target_arch = "x86_64"),
-)));
+));
+
+/// Whether the GPU can be used. Cleared after the GPU build failed to load the model.
+static GPU: AtomicBool = AtomicBool::new(HAS_GPU);
+
+enum Failed {
+    /// The server couldn't bind its port.
+    Port,
+    /// The server quit on its own: it couldn't load the model.
+    Exited,
+    /// Still not loaded after two minutes.
+    Slow,
+    /// Anything else, with what to tell the user.
+    Other(String),
+}
 
 /// Starts the server and waits until the model is loaded.
-fn start(exe: &Path, model_file: &Path, log: Option<&Path>, gpu: bool) -> Result<Server, String> {
-    let port = free_port().ok_or("Не нашёл свободный порт для модели")?;
+fn start(exe: &Path, model_file: &Path, log: &Path, fresh_log: bool, gpu: bool) -> Result<Server, Failed> {
+    let port = free_port().ok_or_else(|| Failed::Other("Не нашёл свободный порт для модели".into()))?;
     // What the server says goes to a log next to the models, for when it won't start.
-    let log = log.and_then(|path| File::create(path).ok());
+    let mut options = fs::OpenOptions::new();
+    options.create(true);
+    if fresh_log {
+        options.write(true).truncate(true);
+    } else {
+        options.append(true);
+    }
+    let log_file = options.open(log).ok();
+    let log_from = log_file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
     let mut command = Command::new(exe);
     command
         .current_dir(exe.parent().unwrap_or(Path::new(".")))
@@ -546,36 +656,79 @@ fn start(exe: &Path, model_file: &Path, log: Option<&Path>, gpu: bool) -> Result
         .arg(model_file)
         .args(["--host", "127.0.0.1", "--port", &port.to_string()])
         // One request at a time, with room for a long text and its answer.
-        .args(["--ctx-size", "8192", "--parallel", "1", "--jinja", "--no-webui"])
+        .args(["--ctx-size", &CONTEXT.to_string(), "--parallel", "1", "--jinja", "--no-webui"])
         // As many layers as fit in video memory (all of them for these
         // models on most cards), or none.
         .args(["--n-gpu-layers", if gpu { "auto" } else { "0" }])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log.map_or_else(Stdio::null, Stdio::from));
-    platform::prepare(&mut command);
-    let child = command.spawn().map_err(|e| format!("Модель не запустилась: {e}"))?;
+        .stderr(log_file.map_or_else(Stdio::null, Stdio::from));
+    let child = platform::spawn(command).map_err(|e| Failed::Other(format!("Модель не запустилась: {e}")))?;
     platform::adopt(&child);
-    let mut s = Server { child, port, model: String::new(), used: Instant::now() };
+    // Written at once: a crash while the model loads must not leave it unknown.
+    let pid_file = log.with_file_name("server.pid");
+    let _ = fs::write(&pid_file, child.id().to_string());
+    let mut s = Server { child, port, model: String::new(), gpu, used: Instant::now(), pid_file };
+    fn kill(s: &mut Server, failed: Failed) -> Failed {
+        let _ = s.child.kill();
+        let _ = s.child.wait();
+        let _ = fs::remove_file(&s.pid_file);
+        failed
+    }
 
+    // A server that can't bind its port quits at once; give it the moment, so
+    // another program on that port isn't taken for it.
+    thread::sleep(Duration::from_millis(200));
     // Loading the weights takes a few seconds, longer from a slow disk.
     let start = Instant::now();
     loop {
-        if healthy(port) {
-            return Ok(s);
+        if QUITTING.load(Ordering::SeqCst) {
+            return Err(kill(&mut s, Failed::Other(QUIT.into())));
         }
         if !matches!(s.child.try_wait(), Ok(None)) {
-            return Err(
-                "Модель не запустилась. Что пошло не так, написано в server.log в папке с моделями".into()
-            );
+            let _ = fs::remove_file(&s.pid_file);
+            return Err(exit_reason(log, log_from));
+        }
+        if healthy(port) && matches!(s.child.try_wait(), Ok(None)) {
+            return Ok(s);
         }
         if start.elapsed() > Duration::from_secs(120) {
-            let _ = s.child.kill();
-            let _ = s.child.wait();
-            return Err("Модель слишком долго загружается".into());
+            return Err(kill(&mut s, Failed::Slow));
         }
         thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Tokens the server holds for the text and the answer together.
+const CONTEXT: u32 = 16384;
+
+/// Why the server quit, from what it wrote to the log after `from`.
+fn exit_reason(log: &Path, from: u64) -> Failed {
+    let Ok(mut file) = File::open(log) else { return Failed::Exited };
+    let mut tail = Vec::new();
+    if file.seek(SeekFrom::Start(from)).is_err() || file.read_to_end(&mut tail).is_err() {
+        return Failed::Exited;
+    }
+    // llama.cpp: "couldn't bind HTTP server socket, hostname: 127.0.0.1, port: ..."
+    if String::from_utf8_lossy(&tail).contains("couldn't bind") {
+        Failed::Port
+    } else {
+        Failed::Exited
+    }
+}
+
+/// A server that an earlier run left behind when it crashed or was force-quit.
+/// Windows ends it with the app through a job; Linux by the parent-death signal.
+fn reap_orphan(root: &Path) {
+    static DONE: Once = Once::new();
+    DONE.call_once(|| {
+        let file = root.join("server.pid");
+        let Some(pid) = fs::read_to_string(&file).ok().and_then(|s| s.trim().parse::<u32>().ok()) else {
+            return;
+        };
+        let _ = fs::remove_file(&file);
+        platform::kill_stale(pid);
+    });
 }
 
 fn address(port: u16) -> String {
@@ -604,9 +757,9 @@ fn watch_idle() {
     STARTED.call_once(|| {
         thread::spawn(|| loop {
             thread::sleep(Duration::from_secs(30));
-            let mut server = SERVER.lock().unwrap();
-            if server.as_ref().is_some_and(|s| s.used.elapsed() > IDLE) {
-                stop(&mut server);
+            let mut slot = SERVER.lock().unwrap();
+            if slot.server.as_ref().is_some_and(|s| s.used.elapsed() > IDLE) {
+                stop(&mut slot.server);
             }
         });
     });
@@ -625,8 +778,8 @@ mod platform {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    pub fn prepare(command: &mut Command) {
-        command.creation_flags(CREATE_NO_WINDOW);
+    pub fn spawn(mut command: Command) -> std::io::Result<Child> {
+        command.creation_flags(CREATE_NO_WINDOW).spawn()
     }
 
     /// A job that ends the server when Airtype ends, even if it crashes.
@@ -655,32 +808,82 @@ mod platform {
             unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) };
         }
     }
+
+    /// The job already ended it along with the app that started it.
+    pub fn kill_stale(_pid: u32) {}
 }
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use std::io;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
+    use std::sync::{mpsc, OnceLock};
 
-    /// The kernel stops the server when Airtype ends, even if it crashes.
-    pub fn prepare(command: &mut Command) {
+    type Request = (Command, mpsc::Sender<io::Result<Child>>);
+
+    /// The kernel stops the server when its parent ends, even if it crashes. The
+    /// "parent" there is the thread that started it, not the process, so every
+    /// server is started from one thread that lives as long as the app.
+    pub fn spawn(mut command: Command) -> io::Result<Child> {
+        static LAUNCHER: OnceLock<mpsc::Sender<Request>> = OnceLock::new();
+        let parent = std::process::id();
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                // The app went away before the signal was armed.
+                if libc::getppid() as u32 != parent {
+                    libc::_exit(0);
+                }
                 Ok(())
             });
         }
+        let launcher = LAUNCHER.get_or_init(|| {
+            let (sender, requests) = mpsc::channel::<Request>();
+            let _ = std::thread::Builder::new().name("airtype-launcher".into()).spawn(move || {
+                for (mut command, reply) in requests {
+                    let _ = reply.send(command.spawn());
+                }
+            });
+            sender
+        });
+        let (reply, child) = mpsc::channel();
+        let gone = || io::Error::other("не запустился поток для модели");
+        launcher.send((command, reply)).map_err(|_| gone())?;
+        child.recv().map_err(|_| gone())?
     }
 
     pub fn adopt(_child: &Child) {}
+
+    pub fn kill_stale(pid: u32) {
+        super::kill_if_server(pid);
+    }
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     use std::process::{Child, Command};
 
-    pub fn prepare(_command: &mut Command) {}
+    pub fn spawn(mut command: Command) -> std::io::Result<Child> {
+        command.spawn()
+    }
+
     pub fn adopt(_child: &Child) {}
+
+    /// Nothing ends the server with a crashed app here, so the next run does.
+    pub fn kill_stale(pid: u32) {
+        super::kill_if_server(pid);
+    }
+}
+
+/// Stops the process if it still is a llama-server: the id may belong to
+/// another program by now.
+#[cfg(unix)]
+fn kill_if_server(pid: u32) {
+    let Ok(out) = Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output() else { return };
+    if String::from_utf8_lossy(&out.stdout).trim().ends_with(SERVER_EXE) {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
 }
 
 #[cfg(test)]

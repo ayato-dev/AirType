@@ -103,10 +103,16 @@
 
           <div class="local" id="local" hidden>
             <ul class="rows" id="local-models"></ul>
-            <p class="hint">
-              Скачивается один раз. Работает на видеокарте, а если её нет, на процессоре. Пока модель запущена, она
-              занимает 2–4 ГБ видеопамяти или оперативки, а через 10 минут без дела выгружается.
-            </p>
+            <ul class="rows" id="gpu-row">
+              <li>
+                <label class="row">
+                  <input type="checkbox" class="tick" id="gpu" />
+                  <span class="row-text">
+                    <span class="row-title">Аппаратное ускорение</span>
+                  </span>
+                </label>
+              </li>
+            </ul>
           </div>
 
           <div class="form" id="form">
@@ -133,7 +139,6 @@
                 </span>
               </div>
             </div>
-            <p class="hint" id="model-hint"></p>
 
             <details class="more">
               <summary><svg class="icon"><use href="#i-chevron" /></svg>Свой адрес API</summary>
@@ -144,7 +149,6 @@
 
           <div class="check">
             <button class="btn-mark" id="test" type="button">Проверить</button>
-            <span class="hint">Переведёт тестовую фразу</span>
           </div>
           <figure class="sheet preview" id="test-result" aria-live="polite" hidden>
             <p class="preview-before"><mark id="test-before"></mark></p>
@@ -159,7 +163,6 @@
                 <input type="checkbox" class="tick" id="enabled" />
                 <span class="row-text">
                   <span class="row-title">Сочетания клавиш работают</span>
-                  <span class="row-desc">Поставить на паузу можно и из меню в трее</span>
                 </span>
               </label>
             </li>
@@ -168,7 +171,6 @@
                 <input type="checkbox" class="tick" id="show-hud" />
                 <span class="row-text">
                   <span class="row-title">Ярлычок под полем ввода</span>
-                  <span class="row-desc">Видно, что нейронка думает, и если что-то пошло не так</span>
                 </span>
               </label>
             </li>
@@ -188,8 +190,8 @@
           </div>
 
           <p class="about">
-            Airtype <span id="version"></span>. Ключи хранятся в системной связке ключей, а текст уходит только
-            в выбранный API.
+            Airtype <span id="version"></span>. <span id="update-result"></span>
+            <button class="link" id="update-check" type="button">Проверить обновления</button>
           </p>
         </section>
       </main>

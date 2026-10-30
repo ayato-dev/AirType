@@ -13,7 +13,7 @@
     provider: "local",
     anthropic: { model: "claude-haiku-5-5", baseUrl: "" },
     openai: { model: "", baseUrl: "" },
-    local: { model: "qwen3.5-2b" },
+    local: { model: "qwen3.5-2b", gpu: true },
     effort: "low",
     targetLang: "English",
     secondaryLang: "Русский",
@@ -42,7 +42,7 @@
       localSupported: true,
       accessibility: true,
       autostart: true,
-      version: "0.2.1",
+      version: "0.3.0",
     },
     local_status: {
       models: [
@@ -50,7 +50,9 @@
         { id: "qwen3.5-4b", name: "Qwen3.5 4B", note: "Точнее и пишет живее, но вдвое медленнее", size: LARGE, downloaded: false },
       ],
       download: { model: "qwen3.5-4b", stage: "model", done: Math.round(LARGE * 0.43), total: LARGE, message: null },
+      gpu: true,
     },
+    update_status: { supported: true, available: null, stage: "idle", done: 0, total: 0, message: null },
   };
 
   let next = 1;

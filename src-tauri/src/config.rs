@@ -37,11 +37,13 @@ pub struct ProviderConfig {
 pub struct LocalConfig {
     /// One of `local::MODELS`.
     pub model: String,
+    /// Run the model on the video card when there is one; off keeps it on the processor.
+    pub gpu: bool,
 }
 
 impl Default for LocalConfig {
     fn default() -> Self {
-        Self { model: "qwen3.5-2b".into() }
+        Self { model: "qwen3.5-2b".into(), gpu: true }
     }
 }
 

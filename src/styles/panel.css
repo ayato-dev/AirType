@@ -78,6 +78,10 @@ button {
   animation: fade var(--fast) var(--ease);
 }
 
+.panel.enter {
+  animation: rise 180ms var(--ease);
+}
+
 /* ---------- the selection, marked as it is in the app ---------- */
 
 .quote {
@@ -396,6 +400,13 @@ textarea.request {
 @keyframes fade {
   from {
     opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
   }
 }
 

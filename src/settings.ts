@@ -30,7 +30,7 @@ interface Settings {
   provider: Provider;
   anthropic: ProviderConfig;
   openai: ProviderConfig;
-  local: { model: string };
+  local: { model: string; gpu: boolean };
   effort: string;
   targetLang: string;
   secondaryLang: string;
@@ -79,6 +79,17 @@ interface LocalProgress {
 interface LocalStatus {
   models: LocalModel[];
   download: LocalProgress | null;
+  /** The engine here can run on the video card. */
+  gpu: boolean;
+}
+
+interface UpdateStatus {
+  supported: boolean;
+  available: string | null;
+  stage: "idle" | "checking" | "downloading" | "installing" | "error";
+  done: number;
+  total: number;
+  message: string | null;
 }
 
 type CloudProvider = "anthropic" | "openai";
@@ -119,18 +130,14 @@ const LANGS: Choice[] = [
   "한국어",
 ].map((value) => ({ value }));
 
-const LOCAL_HINT =
-  "Qwen3.5 прямо на твоём компьютере: бесплатно, без ключа и без интернета. Отвечает медленнее облака и пишет попроще.";
-
 const PROVIDER_TEXT: Record<
   CloudProvider,
-  { hint: string; key: string; model: string; modelHint: string; url: string; urlHint: string }
+  { hint: string; key: string; model: string; url: string; urlHint: string }
 > = {
   anthropic: {
     hint: "Ключ берётся в console.anthropic.com, раздел API keys.",
     key: "sk-ant-…",
     model: "claude-haiku-5-5",
-    modelHint: "Haiku 5.5 отвечает быстрее всех и стоит дешевле, Opus 5.5 пишет лучше всех.",
     url: "https://api.anthropic.com",
     urlHint: "Пусто значит официальный api.anthropic.com. Для прокси укажи адрес без /v1.",
   },
@@ -138,7 +145,6 @@ const PROVIDER_TEXT: Record<
     hint: "OpenAI, OpenRouter, Ollama, LM Studio и всё, что говорит на языке OpenAI.",
     key: "Для локальной модели не нужен",
     model: "Имя модели у провайдера",
-    modelHint: "Имя модели пиши так, как в документации провайдера.",
     url: "https://api.openai.com/v1",
     urlHint: "Пусто значит api.openai.com/v1. OpenRouter: https://openrouter.ai/api/v1, Ollama: http://localhost:11434/v1",
   },
@@ -180,11 +186,12 @@ const el = {
   keyEye: $<HTMLButtonElement>("key-eye"),
   keyState: $("key-state"),
   model: $<HTMLInputElement>("model"),
-  modelHint: $("model-hint"),
   effortField: $("effort-field"),
   form: $("form"),
   local: $("local"),
   localModels: $<HTMLUListElement>("local-models"),
+  gpuRow: $("gpu-row"),
+  gpu: $<HTMLInputElement>("gpu"),
   localOption: $("local-option"),
   localOr: $("local-or"),
   providerOr: $("provider-or"),
@@ -203,6 +210,8 @@ const el = {
   axState: $("ax-state"),
   axOpen2: $<HTMLButtonElement>("ax-open-2"),
   version: $("version"),
+  updateResult: $("update-result"),
+  updateCheck: $<HTMLButtonElement>("update-check"),
 };
 
 let ui: UiState;
@@ -212,7 +221,10 @@ let expanded: string | null = null;
 let previewId: string | null = null;
 /** Whose hotkey is being recorded: an action or the panel. */
 let recording: { owner: { hotkey: string }; chip: HTMLButtonElement } | null = null;
-let local: LocalStatus = { models: [], download: null };
+let local: LocalStatus = { models: [], download: null, gpu: false };
+let update: UpdateStatus = { supported: false, available: null, stage: "idle", done: 0, total: 0, message: null };
+/** Said after a check the user asked for: "the latest version". */
+let updateResult = "";
 let effortSelect: { render: () => void } | null = null;
 
 function icon(name: string): SVGSVGElement {
@@ -249,6 +261,7 @@ function scheduleSave(delay = 350) {
 
 async function save() {
   window.clearTimeout(saveTimer);
+  saveTimer = undefined;
   try {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("save_settings", { settings });
     // The new file is written, so the remark about the old one is done.
@@ -327,6 +340,8 @@ function currentNotes(): Note[] {
   const notes: Note[] = [];
   if (complaint) notes.push(complaint);
   if (ui.notice) notes.push({ text: ui.notice, flag: "не прочитался" });
+  const updateNote = updateNoteFor(update);
+  if (updateNote) notes.push(updateNote);
   // On the model tab the key field is right there, a remark about it would only repeat it.
   if (requiresKey() && !hasKey() && view !== "model") {
     notes.push({
@@ -366,6 +381,55 @@ function currentNotes(): Note[] {
     notes.push({ text: "Сочетания на паузе.", action: { label: "Включить", run: () => setPaused(false) } });
   }
   return notes;
+}
+
+// ---------- updates ----------
+
+function updateNoteFor(u: UpdateStatus): Note | null {
+  switch (u.stage) {
+    case "downloading": {
+      const percent = u.total > 0 ? `, ${Math.floor((u.done / u.total) * 100)}%` : "";
+      return { text: `Скачиваю обновление${percent}.` };
+    }
+    case "installing":
+      return { text: "Ставлю обновление, Airtype сейчас перезапустится." };
+    case "error":
+      if (!u.message) return null;
+      return {
+        text: `${u.message}.`.replace(/\.\.$/, "."),
+        flag: u.message.split(":")[0],
+        action: { label: "Ещё раз", run: () => void (u.available ? installUpdate() : checkUpdate()) },
+      };
+    default:
+      return u.available
+        ? { text: `Вышла версия ${u.available}.`, action: { label: "Обновить", run: () => void installUpdate() } }
+        : null;
+  }
+}
+
+function renderUpdate() {
+  const checking = update.stage === "checking";
+  el.updateCheck.disabled = checking;
+  el.updateCheck.textContent = checking ? "Проверяю…" : "Проверить обновления";
+  el.updateCheck.hidden =
+    !update.supported || update.available !== null || update.stage === "downloading" || update.stage === "installing";
+  el.updateResult.textContent = update.available ? `Есть версия ${update.available}.` : updateResult;
+  renderNotes();
+}
+
+async function checkUpdate() {
+  updateResult = "";
+  try {
+    const found = await invoke<string | null>("update_check");
+    if (!found) updateResult = "Это последняя версия.";
+  } catch {
+    // The error comes with the status event and shows as a note.
+  }
+  renderUpdate();
+}
+
+async function installUpdate() {
+  await invoke("update_install");
 }
 
 function renderNotes() {
@@ -474,8 +538,8 @@ function renderProvider() {
   el.form.hidden = provider === "local";
   el.local.hidden = provider !== "local";
   el.testResult.hidden = true;
+  el.providerHint.hidden = provider === "local";
   if (provider === "local") {
-    el.providerHint.textContent = LOCAL_HINT;
     renderLocal();
     renderStatus();
     return;
@@ -487,11 +551,10 @@ function renderProvider() {
   const hasKey = ui.keys[provider];
   el.apiKey.value = "";
   el.apiKey.placeholder = hasKey ? "Вставь новый, чтобы заменить" : text.key;
-  el.keyState.textContent = hasKey ? "сохранён в связке ключей" : "";
+  el.keyState.textContent = hasKey ? "сохранён" : "";
 
   el.model.value = cfg.model;
   el.model.placeholder = text.model;
-  el.modelHint.textContent = text.modelHint;
 
   el.effortField.hidden = provider !== "anthropic";
   effortSelect?.render();
@@ -604,10 +667,13 @@ let localError: { model: string; message: string } | null = null;
 
 function renderLocal() {
   el.localModels.replaceChildren(...local.models.map(localRow));
+  el.gpuRow.hidden = !local.gpu;
+  el.gpu.checked = settings.local.gpu;
 }
 
 async function refreshLocal() {
   local = await invoke<LocalStatus>("local_status");
+  update = await invoke<UpdateStatus>("update_status");
   if (settings.provider === "local") renderLocal();
   renderNotes();
 }
@@ -838,16 +904,31 @@ function startRecording(owner: { hotkey: string }, chip: HTMLButtonElement) {
   void invoke("suspend_hotkeys", { suspended: true });
 }
 
-function stopRecording() {
-  if (!recording) return;
+function stopRecording(): Promise<void> {
+  if (!recording) return Promise.resolve();
   const { owner, chip } = recording;
   recording = null;
   chip.classList.remove("recording");
   fillChip(chip, owner.hotkey);
-  void save().then(async () => {
+  return save().then(async () => {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("suspend_hotkeys", { suspended: false });
     refreshActionMeta();
   });
+}
+
+let closing = false;
+
+/** Closes settings with the last edits saved and the hotkeys back on. */
+async function closeSettings() {
+  if (closing) return;
+  closing = true;
+  try {
+    await stopRecording();
+    // A field edited a moment ago is still waiting for its debounce.
+    if (saveTimer !== undefined) await save();
+  } finally {
+    await invoke("hide_settings");
+  }
 }
 
 window.addEventListener(
@@ -860,7 +941,7 @@ window.addEventListener(
       const isField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (hideCombo || (e.key === "Escape" && !isField)) {
         e.preventDefault();
-        void invoke("hide_settings");
+        void closeSettings();
       }
       return;
     }
@@ -891,7 +972,7 @@ window.addEventListener(
   true,
 );
 
-window.addEventListener("blur", () => stopRecording());
+window.addEventListener("blur", () => void stopRecording());
 
 // ---------- wiring ----------
 
@@ -902,7 +983,7 @@ function setPaused(paused: boolean) {
 }
 
 function bind() {
-  $("close").addEventListener("click", () => void invoke("hide_settings"));
+  $("close").addEventListener("click", () => void closeSettings());
   $("minimize").addEventListener("click", () => void getCurrentWindow().minimize());
   el.views.addEventListener("scroll", updateFade, { passive: true });
   const resized = new ResizeObserver(updateFade);
@@ -1034,6 +1115,11 @@ function bind() {
     scheduleSave(0);
   });
 
+  el.gpu.addEventListener("change", () => {
+    settings.local.gpu = el.gpu.checked;
+    scheduleSave(0);
+  });
+
   el.autostart.addEventListener("change", async () => {
     try {
       await invoke("set_autostart", { enabled: el.autostart.checked });
@@ -1044,6 +1130,7 @@ function bind() {
   });
 
   el.axOpen2.addEventListener("click", openAccessibility);
+  el.updateCheck.addEventListener("click", () => void checkUpdate());
 }
 
 /** Picks up changes made outside this window: tray pause, a granted permission, a new key. */
@@ -1070,6 +1157,7 @@ async function init() {
 
   renderProvider();
   renderActions();
+  renderUpdate();
   bind();
   showView((requiresKey() && !hasKey()) || (settings.provider === "local" && !localReady()) ? "model" : "actions");
 
@@ -1086,6 +1174,11 @@ async function init() {
     }
   });
 
+  await listen<UpdateStatus>("update", ({ payload }) => {
+    update = payload;
+    renderUpdate();
+  });
+
   await listen<Settings>("settings-changed", ({ payload }) => {
     if (payload.paused !== settings.paused) {
       settings.paused = payload.paused;
@@ -1095,8 +1188,15 @@ async function init() {
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     if (focused) void refreshExternal();
   });
-  window.setInterval(() => {
-    if (ui.platform === "macos" && !ui.accessibility) void refreshExternal();
+  // Alt+F4 and the like: save first, then close from our side.
+  await getCurrentWindow().onCloseRequested((event) => {
+    event.preventDefault();
+    void closeSettings();
+  });
+  // Waiting for the permission: ask only for it, not for the keychain behind get_state.
+  window.setInterval(async () => {
+    if (ui.platform !== "macos" || ui.accessibility) return;
+    if (await invoke<boolean>("accessibility_status")) void refreshExternal();
   }, 2000);
 }
 
