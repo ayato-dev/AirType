@@ -14,6 +14,9 @@ const SETTINGS: &[&str] = &[
     "local_download",
     "local_cancel",
     "local_delete",
+    "update_status",
+    "update_check",
+    "update_install",
 ];
 const HUD: &[&str] = &["hud_fit"];
 const PANEL: &[&str] =

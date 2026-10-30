@@ -19,6 +19,9 @@
     "allow-local-status",
     "allow-local-download",
     "allow-local-cancel",
-    "allow-local-delete"
+    "allow-local-delete",
+    "allow-update-status",
+    "allow-update-check",
+    "allow-update-install"
   ]
 }
