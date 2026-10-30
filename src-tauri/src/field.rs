@@ -560,6 +560,11 @@ mod imp {
         Some(automation)
     }
 
+    /// Reads stop here: a huge document comes over COM as one string otherwise.
+    /// Well past what a request may carry, so a cut text is refused, never sent
+    /// or replaced half.
+    const MAX_READ: i32 = 100_000;
+
     /// The selected text; empty when there is only a caret.
     fn selection(element: &IUIAutomationElement) -> Option<String> {
         unsafe {
@@ -568,7 +573,7 @@ mod imp {
             if ranges.Length().ok()? < 1 {
                 return Some(String::new());
             }
-            Some(ranges.GetElement(0).ok()?.GetText(-1).ok()?.to_string())
+            Some(ranges.GetElement(0).ok()?.GetText(MAX_READ).ok()?.to_string())
         }
     }
 
@@ -583,7 +588,7 @@ mod imp {
             let document = element
                 .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
                 .and_then(|pattern| pattern.DocumentRange())
-                .and_then(|range| range.GetText(-1));
+                .and_then(|range| range.GetText(MAX_READ));
             match document {
                 Ok(text) => Some(text.to_string()),
                 Err(_) => Some(value.CurrentValue().ok()?.to_string()),

@@ -28,6 +28,8 @@ url = "2"
 sha2 = "0.10"
 # Unpacks the local model's server (gzip, and deflate inside zip); pure Rust.
 flate2 = "1"
+# Lets a panel request be dropped mid-flight; Tauri already runs on tokio.
+tokio = { version = "1", default-features = false, features = ["macros", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 # Already pulled in by Tauri's WebView2 layer; here only for UI Automation (COM).

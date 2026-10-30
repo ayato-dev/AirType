@@ -4,13 +4,24 @@
 use crate::config::{self, Action, Provider, Settings};
 use crate::state::AppState;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tauri::{AppHandle, Manager};
 
 const ANTHROPIC_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 const OPENAI_URL: &str = "https://api.openai.com/v1";
 const MAX_TOKENS: u32 = 16000;
+/// The longest text sent at once, in characters. Longer is almost always a
+/// select-all that took a whole document by mistake, and costs money for nothing.
+const MAX_CHARS: usize = 30_000;
+/// The model on this computer holds `local::CONTEXT` tokens for the text and its answer.
+const LOCAL_MAX_CHARS: usize = 12_000;
+const LOCAL_MAX_TOKENS: u32 = 8192;
+/// The panel moved on while the model was thinking; nobody waits for this answer.
+pub const CANCELLED: &str = "Отменено";
 
 /// Models that accept server-side refusal fallback (`fallbacks: "default"`) on the Claude API.
 const FALLBACK_MODELS: &[&str] =
@@ -46,6 +57,9 @@ fn check_transport(settings: &Settings, api_key: Option<&str>) -> Result<(), Str
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
+        // A redirect would carry `x-api-key` to wherever it points, plain http
+        // included; the APIs answer where they are asked.
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(90))
         .build()
@@ -59,6 +73,8 @@ pub struct Prompt {
     /// A translation whose direction is known: the script the answer must be
     /// written in, and the request to send if it isn't.
     expect: Option<(Script, String)>,
+    /// Characters of the user's text or request.
+    size: usize,
 }
 
 impl Prompt {
@@ -108,8 +124,11 @@ Reply with the resulting text only: no quotes, no tags, no notes, no explanation
         ),
         user: format!("{instruction}\n\n{}", wrap_text(text)),
         expect: None,
+        size: text.chars().count(),
     };
-    if !template.contains("{target}") {
+    // A name, a model number or a line of code stays as it is in any language,
+    // so a short text can't tell whether it was translated.
+    if !template.contains("{target}") || prose_letters(text) < MIN_LETTERS {
         return prompt;
     }
     prompt.expecting(&into, written, |language| {
@@ -128,13 +147,43 @@ pub enum Script {
     Cjk,
 }
 
+/// Letters a text needs before its language is checked.
+const MIN_LETTERS: usize = 20;
+
+/// The words of a text that a translation changes: without code, links, paths
+/// and @mentions, which stay as they are in any language.
+fn prose(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    // Between backticks is code, whether `inline` or a ``` block.
+    for (i, part) in text.split('`').enumerate() {
+        if i % 2 == 1 {
+            continue;
+        }
+        for word in part.split_whitespace() {
+            let kept = !(word.contains("://")
+                || word.starts_with("www.")
+                || word.starts_with('@')
+                || word.contains(['/', '\\', '_', '=']));
+            if kept {
+                out.push_str(word);
+                out.push(' ');
+            }
+        }
+    }
+    out
+}
+
+fn prose_letters(text: &str) -> usize {
+    letters(&prose(text)).iter().map(|&(_, n)| n).sum()
+}
+
 /// How many letters of the text are in each script.
 fn letters(text: &str) -> [(Script, usize); 3] {
     let (mut latin, mut cyrillic, mut cjk) = (0usize, 0usize, 0usize);
     for c in text.chars() {
         match c {
             'a'..='z' | 'A'..='Z' | '\u{c0}'..='\u{24f}' if c.is_alphabetic() => latin += 1,
-            '\u{400}'..='\u{4ff}' => cyrillic += 1,
+            '\u{400}'..='\u{52f}' => cyrillic += 1,
             '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' => cjk += 1,
             _ => {}
         }
@@ -142,16 +191,19 @@ fn letters(text: &str) -> [(Script, usize); 3] {
     [(Script::Latin, latin), (Script::Cyrillic, cyrillic), (Script::Cjk, cjk)]
 }
 
-/// The script most letters of the text are in.
+/// The script most letters of the text are in, code and links aside.
 pub fn script(text: &str) -> Option<Script> {
-    let best = letters(text).into_iter().max_by_key(|&(_, n)| n)?;
-    (best.1 > 0).then_some(best.0)
+    let counts = letters(&prose(text));
+    let best = counts.into_iter().max_by_key(|&(_, n)| n)?;
+    // A tie says nothing about which language it is.
+    let tied = counts.iter().filter(|&&(_, n)| n == best.1).count() > 1;
+    (best.1 > 0 && !tied).then_some(best.0)
 }
 
 /// The answer is in this script, give or take the names, links and code a
 /// translation keeps as they were ("Открой README на github.com" is Russian).
 fn written_in(text: &str, expected: Script) -> bool {
-    let counts = letters(text);
+    let counts = letters(&prose(text));
     let total: usize = counts.iter().map(|&(_, n)| n).sum();
     let ours = counts.iter().find(|&&(s, _)| s == expected).map_or(0, |&(_, n)| n);
     total > 0 && ours * 10 >= total * 3
@@ -212,6 +264,7 @@ Reply with the text itself only: no quotes, no tags, no title, no notes, no opti
         ),
         user: format!("{write_in}{tone}\n\n{}", wrap_request(request)),
         expect: None,
+        size: request.chars().count(),
     };
     match &language {
         Some(language) => prompt.expecting(language, script(request), |name| {
@@ -237,13 +290,20 @@ pub const NO_KEY: &str = "Сначала добавь ключ API в настр
 /// Runs an action on a text. A translation that comes back in the script it
 /// started in (a small model that kept the text as it was) is asked once more,
 /// more bluntly, and is not passed off as done if it fails again.
-pub fn transform_text(app: &AppHandle, settings: &Settings, prompt: &Prompt) -> Result<String, String> {
-    let output = answer(app, settings, &prompt.system, &prompt.user)?;
+/// `cancel` stops waiting for the model when it is set.
+pub fn transform_text(
+    app: &AppHandle,
+    settings: &Settings,
+    prompt: &Prompt,
+    cancel: Option<&AtomicBool>,
+) -> Result<String, String> {
+    check_size(settings, prompt.size)?;
+    let output = answer(app, settings, &prompt.system, &prompt.user, cancel)?;
     let Some((expected, retry)) = &prompt.expect else { return Ok(output) };
     if written_in(&output, *expected) {
         return Ok(output);
     }
-    let output = answer(app, settings, &prompt.system, retry)?;
+    let output = answer(app, settings, &prompt.system, retry, cancel)?;
     if written_in(&output, *expected) {
         return Ok(output);
     }
@@ -255,10 +315,27 @@ pub fn transform_text(app: &AppHandle, settings: &Settings, prompt: &Prompt) -> 
     })
 }
 
+pub fn check_size(settings: &Settings, size: usize) -> Result<(), String> {
+    let limit = if settings.provider == Provider::Local { LOCAL_MAX_CHARS } else { MAX_CHARS };
+    if size > limit {
+        return Err(format!("Текст слишком длинный ({size} знаков, можно до {limit}). Выдели часть"));
+    }
+    Ok(())
+}
+
 /// Asks the model from the settings and waits for the answer: for the engine's
 /// and the panel's threads, never an async worker. The local model is started
 /// first when it is the one chosen.
-pub fn answer(app: &AppHandle, settings: &Settings, system: &str, user: &str) -> Result<String, String> {
+pub fn answer(
+    app: &AppHandle,
+    settings: &Settings,
+    system: &str,
+    user: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<String, String> {
+    if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+        return Err(CANCELLED.into());
+    }
     let api_key = match settings.provider {
         Provider::Local => None,
         provider => config::api_key(provider),
@@ -271,18 +348,27 @@ pub fn answer(app: &AppHandle, settings: &Settings, system: &str, user: &str) ->
         _ => None,
     };
     let http = &app.state::<AppState>().http;
-    let result = tauri::async_runtime::block_on(ask(
-        http,
-        settings,
-        api_key.as_deref(),
-        local.as_deref(),
-        system,
-        user,
-    ));
+    let request = ask(http, settings, api_key.as_deref(), local.as_deref(), system, user);
+    let result = tauri::async_runtime::block_on(async {
+        match cancel {
+            None => request.await,
+            // Dropping the request closes its connection.
+            Some(cancel) => tokio::select! {
+                result = request => result,
+                () = cancelled(cancel) => Err(CANCELLED.to_string()),
+            },
+        }
+    });
     if local.is_some() {
         crate::local::touch();
     }
     result
+}
+
+async fn cancelled(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// A request without the local model, for the tests' mock servers.
@@ -423,7 +509,7 @@ async fn on_device(client: &reqwest::Client, base: &str, system: &str, user: &st
         "top_p": 0.8,
         "top_k": 20,
         "min_p": 0,
-        "max_tokens": 4096,
+        "max_tokens": LOCAL_MAX_TOKENS,
     });
     // A long text on a slow processor takes a while; the shared client gives up at 90 s.
     let request =
@@ -452,7 +538,7 @@ async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
     if status.is_success() {
         return Ok(body);
     }
-    let detail = body["error"]["message"].as_str().unwrap_or(raw.trim());
+    let detail = detail(&body, &raw);
     Err(match status.as_u16() {
         401 => "Ключ API не подходит".to_string(),
         403 => format!("Доступ запрещён: {detail}"),
@@ -461,6 +547,20 @@ async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
         529 | 503 => "Нейронка перегружена, попробуй ещё раз".to_string(),
         code => format!("Ошибка API {code}: {detail}"),
     })
+}
+
+/// What the server said went wrong, short enough for the HUD.
+fn detail(body: &Value, raw: &str) -> String {
+    let text = body["error"]["message"].as_str().unwrap_or(raw).trim();
+    // A proxy or a captive portal answering with a web page.
+    if text.starts_with('<') {
+        return "вместо ответа API пришла веб-страница".into();
+    }
+    let mut short: String = text.chars().take(200).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    short
 }
 
 /// Strips wrappers some models echo back despite the instructions, and the
@@ -533,6 +633,13 @@ mod tests {
 
     /// Serves one canned JSON response and hands back the raw request it received.
     fn mock_server(response: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        mock_server_raw(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{response}",
+            response.len()
+        ))
+    }
+
+    fn mock_server_raw(response: String) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -558,12 +665,7 @@ mod tests {
                     }
                 }
             }
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{response}",
-                response.len()
-            )
-            .unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
             String::from_utf8(raw).unwrap()
         });
         (url, handle)
@@ -634,15 +736,15 @@ mod tests {
         let settings = Settings::default();
         let translate = &settings.actions[0];
 
-        let from_russian = action_prompt(&settings, translate, "привет, как дела?");
+        let from_russian = action_prompt(&settings, translate, "привет, как дела? давно не виделись");
         assert!(from_russian
             .system
             .contains("into English. If it is already in English, translate it into Russian"));
         assert!(from_russian.user.starts_with("Translate the text into English."));
-        assert!(from_russian.user.ends_with("<text>\nпривет, как дела?\n</text>"));
+        assert!(from_russian.user.ends_with("<text>\nпривет, как дела? давно не виделись\n</text>"));
         assert_eq!(from_russian.expect.map(|e| e.0), Some(Script::Latin));
 
-        let from_english = action_prompt(&settings, translate, "See you on Monday");
+        let from_english = action_prompt(&settings, translate, "See you on Monday, bring the slides");
         assert!(from_english.user.starts_with("Translate the text into Russian."));
         assert_eq!(from_english.expect.map(|e| e.0), Some(Script::Cyrillic));
 
@@ -677,5 +779,56 @@ mod tests {
         assert!(written_in("Открой README на github.com/foo", Script::Cyrillic));
         assert!(!written_in("Привет, как дела? Скинь файл по ссылке, plz", Script::Latin));
         assert!(!written_in("", Script::Latin));
+        // Half and half says nothing.
+        assert_eq!(script("abc где"), None);
+        // Code, links and mentions don't count towards the language.
+        assert_eq!(
+            script("Запусти `npm run build --watch` и открой https://example.com/docs"),
+            Some(Script::Cyrillic)
+        );
+        assert!(written_in("Run `npm run build` and ping @vitaliy_dev: готово", Script::Cyrillic));
+    }
+
+    #[test]
+    fn short_or_code_heavy_text_is_not_checked_for_language() {
+        let settings = Settings::default();
+        let translate = &settings.actions[0];
+        // A name or a model stays in Latin letters in any language.
+        assert!(action_prompt(&settings, translate, "iPhone 15 Pro").expect.is_none());
+        assert!(action_prompt(&settings, translate, "OK").expect.is_none());
+        let code = "`cargo build --release` then `./target/release/airtype --help`";
+        assert!(action_prompt(&settings, translate, code).expect.is_none());
+    }
+
+    #[test]
+    fn long_text_is_refused_before_the_request() {
+        let mut settings = Settings::default();
+        assert!(check_size(&settings, MAX_CHARS).is_ok());
+        assert!(check_size(&settings, MAX_CHARS + 1).unwrap_err().contains("слишком длинный"));
+        settings.provider = Provider::Local;
+        assert!(check_size(&settings, LOCAL_MAX_CHARS + 1).is_err());
+    }
+
+    #[test]
+    fn error_bodies_are_cut_and_pages_named() {
+        assert!(detail(&Value::Null, "<!DOCTYPE html><html>502</html>").contains("веб-страница"));
+        let long = "x".repeat(500);
+        assert_eq!(detail(&Value::Null, &long).chars().count(), 201);
+        let body = serde_json::json!({"error": {"message": "model not found"}});
+        assert_eq!(detail(&body, "{}"), "model not found");
+    }
+
+    #[test]
+    fn redirects_are_not_followed() {
+        // The key must not follow a redirect to another host.
+        let (url, _server) = mock_server_raw(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:9/\r\ncontent-length: 0\r\n\r\n"
+                .into(),
+        );
+        let mut settings = Settings::default();
+        settings.anthropic.base_url = url;
+        let err = tauri::async_runtime::block_on(complete(&http_client(), &settings, Some("k"), "s", "t"))
+            .unwrap_err();
+        assert!(err.contains("307"), "{err}");
     }
 }
