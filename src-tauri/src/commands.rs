@@ -170,6 +170,8 @@ pub struct LocalModel {
 pub struct LocalStatus {
     models: Vec<LocalModel>,
     download: Option<local::Progress>,
+    /// The engine can run on the video card here.
+    gpu: bool,
 }
 
 #[tauri::command]
@@ -184,7 +186,7 @@ pub fn local_status(app: AppHandle) -> LocalStatus {
             downloaded: local::downloaded(&app, m),
         })
         .collect();
-    LocalStatus { models, download: local::progress() }
+    LocalStatus { models, download: local::progress(), gpu: local::HAS_GPU }
 }
 
 #[tauri::command]

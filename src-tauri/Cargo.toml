@@ -1,6 +1,6 @@
 [package]
 name = "airtype"
-version = "0.2.1"
+version = "0.2.2"
 description = "Lightweight AI translator and editor for any text field"
 edition = "2021"
 rust-version = "1.80"

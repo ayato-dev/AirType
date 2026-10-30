@@ -70,6 +70,11 @@ pub fn apply_settings(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyE
             let _ = item.set_checked(settings.paused);
         }
     }
+    // Video memory comes back at once; the next answer starts the model where it now belongs.
+    // Off a thread: a model that is still loading holds the server for a while.
+    if old.local.gpu != settings.local.gpu {
+        std::thread::spawn(crate::local::shutdown);
+    }
     let _ = app.emit_to("main", "settings-changed", &settings);
     let errors = state.hotkey_errors.lock().unwrap().clone();
     Ok(errors)

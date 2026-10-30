@@ -4,7 +4,7 @@
 //! The page lays out the slip and reports its size; only then is the window
 //! sized to it, put next to the text and shown.
 
-use crate::popup::{self, Fallback, Rect};
+use crate::popup::{self, Anchor, Fallback};
 use serde::Serialize;
 use std::{
     sync::{
@@ -28,7 +28,7 @@ enum HudEvent<'a> {
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// A message is up; the page's size report may show the window.
 static WANTED: AtomicBool = AtomicBool::new(false);
-static ANCHOR: Mutex<Option<Rect>> = Mutex::new(None);
+static ANCHOR: Mutex<Option<Anchor>> = Mutex::new(None);
 
 fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("hud")
@@ -42,7 +42,7 @@ pub fn init(app: &AppHandle) {
 }
 
 /// The text the next messages are about; `None` puts them at the bottom of the screen.
-pub fn set_anchor(anchor: Option<Rect>) {
+pub fn set_anchor(anchor: Option<Anchor>) {
     *ANCHOR.lock().unwrap() = anchor;
 }
 

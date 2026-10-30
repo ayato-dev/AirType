@@ -460,6 +460,8 @@ struct Server {
     child: Child,
     port: u16,
     model: String,
+    /// The model sits in video memory.
+    gpu: bool,
     used: Instant,
 }
 
@@ -486,11 +488,13 @@ pub fn touch() {
 }
 
 /// The address of a running server with the model, starting it if needed.
-pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
+/// `gpu` is the user's choice; the GPU is used only where it also works.
+pub fn ensure(app: &AppHandle, id: &str, gpu: bool) -> Result<String, String> {
     let model = model(id).ok_or("Выбери модель в настройках")?;
+    let gpu = gpu && GPU.load(Ordering::SeqCst);
     let mut server = SERVER.lock().unwrap();
     if let Some(s) = server.as_mut() {
-        if s.model == model.id && matches!(s.child.try_wait(), Ok(None)) {
+        if s.model == model.id && s.gpu == gpu && matches!(s.child.try_wait(), Ok(None)) {
             s.used = Instant::now();
             return Ok(address(s.port));
         }
@@ -509,7 +513,7 @@ pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
     // The GPU first; a driver that can't take the model gets the CPU instead,
     // and the next starts skip the GPU for the rest of the run.
     let mut s = None;
-    if GPU.load(Ordering::SeqCst) {
+    if gpu {
         match start(&exe, &model_file, log.as_deref(), true) {
             Ok(started) => s = Some(started),
             Err(_) => GPU.store(false, Ordering::SeqCst),
@@ -527,12 +531,14 @@ pub fn ensure(app: &AppHandle, id: &str) -> Result<String, String> {
     Ok(address(port))
 }
 
-/// Whether to offload the model to the GPU. Only builds that have one to
-/// offload to; cleared after the GPU build failed to load the model.
-static GPU: AtomicBool = AtomicBool::new(cfg!(any(
+/// This build of the engine can use the video card: Vulkan or Metal.
+pub const HAS_GPU: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(any(windows, target_os = "linux"), target_arch = "x86_64"),
-)));
+));
+
+/// Whether the GPU can be used. Cleared after the GPU build failed to load the model.
+static GPU: AtomicBool = AtomicBool::new(HAS_GPU);
 
 /// Starts the server and waits until the model is loaded.
 fn start(exe: &Path, model_file: &Path, log: Option<&Path>, gpu: bool) -> Result<Server, String> {
@@ -556,7 +562,7 @@ fn start(exe: &Path, model_file: &Path, log: Option<&Path>, gpu: bool) -> Result
     platform::prepare(&mut command);
     let child = command.spawn().map_err(|e| format!("Модель не запустилась: {e}"))?;
     platform::adopt(&child);
-    let mut s = Server { child, port, model: String::new(), used: Instant::now() };
+    let mut s = Server { child, port, model: String::new(), gpu, used: Instant::now() };
 
     // Loading the weights takes a few seconds, longer from a slow disk.
     let start = Instant::now();

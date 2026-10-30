@@ -14,7 +14,7 @@ use crate::{
     hud,
     input::{self, Chord, Target},
     llm, local, panel,
-    popup::Rect,
+    popup::Anchor,
     state::AppState,
     tray,
 };
@@ -66,14 +66,15 @@ fn run(app: &AppHandle, action_id: &str) -> Result<Ran, String> {
     let prompt = llm::action_prompt(&settings, &action, &source.text);
     let output = llm::transform_text(app, &settings, &prompt)?;
 
+    let anchor = source.anchor(cx.anchor);
     if source.editable == Some(false) {
-        panel::show_answer(app, source.text, output, None, cx.anchor, cx.target);
+        panel::show_answer(app, source.text, output, None, anchor, cx.target);
         return Ok(Ran::Shown);
     }
     match write(&source, &output, cx.target)? {
         Written::Done => Ok(Ran::Written),
         Written::Missed(why) => {
-            panel::show_answer(app, source.text, output, Some(why), cx.anchor, cx.target);
+            panel::show_answer(app, source.text, output, Some(why), anchor, cx.target);
             Ok(Ran::Shown)
         }
     }
@@ -105,7 +106,7 @@ pub struct Context {
     pub target: Target,
     pub terminal: bool,
     /// The selection, caret or field on screen, for the HUD and the panel to stand next to.
-    pub anchor: Option<Rect>,
+    pub anchor: Option<Anchor>,
 }
 
 pub fn context() -> Context {
@@ -134,6 +135,13 @@ impl Source {
     /// Nothing was read; an answer goes in at the caret.
     pub fn caret() -> Self {
         Source { text: String::new(), snapshot: None, select_all: false, editable: None }
+    }
+
+    /// Where this text is on screen. Text copied with Ctrl+C may lie outside the
+    /// field that has focus, so a field rectangle is only a hint then.
+    pub fn anchor(&self, anchor: Option<Anchor>) -> Option<Anchor> {
+        let copied = self.snapshot.is_none() && !self.text.is_empty();
+        anchor.map(|a| if copied { a.copied() } else { a })
     }
 }
 

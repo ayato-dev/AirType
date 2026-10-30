@@ -7,7 +7,7 @@
 // Elsewhere the app doesn't run, and nothing builds a snapshot.
 #![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
-use crate::popup::Rect;
+use crate::popup::Anchor;
 
 pub enum Focused {
     /// A password field: its text never leaves it.
@@ -51,8 +51,8 @@ pub fn focused() -> Focused {
 
 /// Where the focused text is on screen: the selection, else the caret in a large
 /// field, else the field. `None` when the app doesn't say.
-pub fn anchor() -> Option<Rect> {
-    imp::anchor().filter(|r| r.w >= 0.0 && r.h > 0.0)
+pub fn anchor() -> Option<Anchor> {
+    imp::anchor().filter(|a| a.rect.w >= 0.0 && a.rect.h > 0.0)
 }
 
 impl Snapshot {
@@ -73,7 +73,8 @@ impl Snapshot {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{Focused, Rect, Replaced, Snapshot};
+    use super::{Focused, Replaced, Snapshot};
+    use crate::popup::{Anchor, Kind, Rect};
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::string::{CFString, CFStringRef};
@@ -237,7 +238,8 @@ mod imp {
         })
     }
 
-    pub fn anchor() -> Option<Rect> {
+    pub fn anchor() -> Option<Anchor> {
+        let text = |rect| Some(Anchor { rect, kind: Kind::Text });
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         unsafe { AXUIElementSetMessagingTimeout(system.as_CFTypeRef(), TIMEOUT) };
         let element = get(&system, "AXFocusedUIElement")?;
@@ -248,16 +250,16 @@ mod imp {
         if let Some(selection) = range(&element, "AXSelectedTextRange") {
             if selection.length > 0 {
                 if let Some(rect) = bounds_for(&element, selection) {
-                    return Some(rect);
+                    return text(rect);
                 }
             } else if large {
                 let caret = CfRange { location: (selection.location - 1).max(0), length: 1 };
                 if let Some(rect) = bounds_for(&element, caret) {
-                    return Some(rect);
+                    return text(rect);
                 }
             }
         }
-        field.filter(|f| f.h <= 400.0)
+        field.filter(|f| f.h <= 400.0).map(|rect| Anchor { rect, kind: Kind::Field })
     }
 
     fn in_web_page(element: &CFType) -> bool {
@@ -418,7 +420,8 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use super::{Focused, Rect, Replaced, Snapshot};
+    use super::{Focused, Replaced, Snapshot};
+    use crate::popup::{Anchor, Kind, Rect};
     use windows::core::Interface;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -596,7 +599,7 @@ mod imp {
         }
     }
 
-    pub fn anchor() -> Option<Rect> {
+    pub fn anchor() -> Option<Anchor> {
         let _com = Com::init();
         let automation = automation()?;
         let element = unsafe { automation.GetFocusedElement() }.ok()?;
@@ -610,9 +613,9 @@ mod imp {
         // selection or the caret line is.
         let large = field.map_or(true, |f| f.h > 180.0);
         if let Some(rect) = text_bounds(&element, large) {
-            return Some(rect);
+            return Some(Anchor { rect, kind: Kind::Text });
         }
-        field.filter(|f| f.w > 0.0 && f.h <= 600.0)
+        field.filter(|f| f.w > 0.0 && f.h <= 600.0).map(|rect| Anchor { rect, kind: Kind::Field })
     }
 
     /// The selected text on screen; with `caret`, the character at the caret when nothing is selected.
@@ -686,11 +689,11 @@ mod imp {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
-    use super::{Focused, Rect, Replaced};
+    use super::{Anchor, Focused, Replaced};
 
     pub struct Field;
 
-    pub fn anchor() -> Option<Rect> {
+    pub fn anchor() -> Option<Anchor> {
         None
     }
 

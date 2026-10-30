@@ -267,7 +267,7 @@ pub fn answer(app: &AppHandle, settings: &Settings, system: &str, user: &str) ->
         return Err(NO_KEY.into());
     }
     let local = match settings.provider {
-        Provider::Local => Some(crate::local::ensure(app, &settings.local.model)?),
+        Provider::Local => Some(crate::local::ensure(app, &settings.local.model, settings.local.gpu)?),
         _ => None,
     };
     let http = &app.state::<AppState>().http;

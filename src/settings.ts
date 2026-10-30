@@ -30,7 +30,7 @@ interface Settings {
   provider: Provider;
   anthropic: ProviderConfig;
   openai: ProviderConfig;
-  local: { model: string };
+  local: { model: string; gpu: boolean };
   effort: string;
   targetLang: string;
   secondaryLang: string;
@@ -79,6 +79,8 @@ interface LocalProgress {
 interface LocalStatus {
   models: LocalModel[];
   download: LocalProgress | null;
+  /** The engine here can run on the video card. */
+  gpu: boolean;
 }
 
 type CloudProvider = "anthropic" | "openai";
@@ -119,18 +121,14 @@ const LANGS: Choice[] = [
   "한국어",
 ].map((value) => ({ value }));
 
-const LOCAL_HINT =
-  "Qwen3.5 прямо на твоём компьютере: бесплатно, без ключа и без интернета. Отвечает медленнее облака и пишет попроще.";
-
 const PROVIDER_TEXT: Record<
   CloudProvider,
-  { hint: string; key: string; model: string; modelHint: string; url: string; urlHint: string }
+  { hint: string; key: string; model: string; url: string; urlHint: string }
 > = {
   anthropic: {
     hint: "Ключ берётся в console.anthropic.com, раздел API keys.",
     key: "sk-ant-…",
     model: "claude-haiku-5-5",
-    modelHint: "Haiku 5.5 отвечает быстрее всех и стоит дешевле, Opus 5.5 пишет лучше всех.",
     url: "https://api.anthropic.com",
     urlHint: "Пусто значит официальный api.anthropic.com. Для прокси укажи адрес без /v1.",
   },
@@ -138,7 +136,6 @@ const PROVIDER_TEXT: Record<
     hint: "OpenAI, OpenRouter, Ollama, LM Studio и всё, что говорит на языке OpenAI.",
     key: "Для локальной модели не нужен",
     model: "Имя модели у провайдера",
-    modelHint: "Имя модели пиши так, как в документации провайдера.",
     url: "https://api.openai.com/v1",
     urlHint: "Пусто значит api.openai.com/v1. OpenRouter: https://openrouter.ai/api/v1, Ollama: http://localhost:11434/v1",
   },
@@ -180,11 +177,12 @@ const el = {
   keyEye: $<HTMLButtonElement>("key-eye"),
   keyState: $("key-state"),
   model: $<HTMLInputElement>("model"),
-  modelHint: $("model-hint"),
   effortField: $("effort-field"),
   form: $("form"),
   local: $("local"),
   localModels: $<HTMLUListElement>("local-models"),
+  gpuRow: $("gpu-row"),
+  gpu: $<HTMLInputElement>("gpu"),
   localOption: $("local-option"),
   localOr: $("local-or"),
   providerOr: $("provider-or"),
@@ -212,7 +210,7 @@ let expanded: string | null = null;
 let previewId: string | null = null;
 /** Whose hotkey is being recorded: an action or the panel. */
 let recording: { owner: { hotkey: string }; chip: HTMLButtonElement } | null = null;
-let local: LocalStatus = { models: [], download: null };
+let local: LocalStatus = { models: [], download: null, gpu: false };
 let effortSelect: { render: () => void } | null = null;
 
 function icon(name: string): SVGSVGElement {
@@ -474,8 +472,8 @@ function renderProvider() {
   el.form.hidden = provider === "local";
   el.local.hidden = provider !== "local";
   el.testResult.hidden = true;
+  el.providerHint.hidden = provider === "local";
   if (provider === "local") {
-    el.providerHint.textContent = LOCAL_HINT;
     renderLocal();
     renderStatus();
     return;
@@ -487,11 +485,10 @@ function renderProvider() {
   const hasKey = ui.keys[provider];
   el.apiKey.value = "";
   el.apiKey.placeholder = hasKey ? "Вставь новый, чтобы заменить" : text.key;
-  el.keyState.textContent = hasKey ? "сохранён в связке ключей" : "";
+  el.keyState.textContent = hasKey ? "сохранён" : "";
 
   el.model.value = cfg.model;
   el.model.placeholder = text.model;
-  el.modelHint.textContent = text.modelHint;
 
   el.effortField.hidden = provider !== "anthropic";
   effortSelect?.render();
@@ -604,6 +601,8 @@ let localError: { model: string; message: string } | null = null;
 
 function renderLocal() {
   el.localModels.replaceChildren(...local.models.map(localRow));
+  el.gpuRow.hidden = !local.gpu;
+  el.gpu.checked = settings.local.gpu;
 }
 
 async function refreshLocal() {
@@ -1031,6 +1030,11 @@ function bind() {
 
   el.showHud.addEventListener("change", () => {
     settings.showHud = el.showHud.checked;
+    scheduleSave(0);
+  });
+
+  el.gpu.addEventListener("change", () => {
+    settings.local.gpu = el.gpu.checked;
     scheduleSave(0);
   });
 
