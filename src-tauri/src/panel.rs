@@ -195,6 +195,8 @@ fn open(
         target_lang: settings.target_lang.trim().to_string(),
         secondary_lang: settings.secondary_lang.trim().to_string(),
     };
+    // A panel still waiting for an answer is replaced: nobody will see that answer.
+    cancel_running();
     *JOB.lock().unwrap() = Some(Job { view, reply, spot, target, focused: false, shown: false });
     let window = window(app)?;
     // The theme may have changed since the last time.
@@ -259,6 +261,11 @@ pub fn fit(app: &AppHandle, seq: u64, height: f64) {
     }
     if first {
         hotkeys::escape(app, true);
+        // Closed while Esc was being taken: its close found nothing to give back.
+        if !JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq) {
+            hotkeys::escape(app, false);
+            return;
+        }
         watch(app, seq, target);
     }
 }
@@ -300,14 +307,17 @@ fn watch(app: &AppHandle, seq: u64, target: Target) {
 /// True when unsure, so a click is never taken for one outside by mistake.
 fn pointer_inside(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window(LABEL) else { return true };
-    let (Ok(at), Ok(size), Ok(pointer)) =
-        (window.outer_position(), window.outer_size(), app.cursor_position())
+    let (Ok(at), Ok(size), Some((x, y))) =
+        (window.outer_position(), window.outer_size(), popup::pointer(app))
     else {
         return true;
     };
-    let (left, top) = (f64::from(at.x), f64::from(at.y));
-    let (right, bottom) = (left + f64::from(size.width), top + f64::from(size.height));
-    (left..right).contains(&pointer.x) && (top..bottom).contains(&pointer.y)
+    // macOS: the window at its own screen's scale, the pointer at the primary's;
+    // both go back to points to compare.
+    let div = if popup::POINTS { window.scale_factor().unwrap_or(1.0) } else { 1.0 };
+    let (left, top) = (f64::from(at.x) / div, f64::from(at.y) / div);
+    let (right, bottom) = (left + f64::from(size.width) / div, top + f64::from(size.height) / div);
+    (left..right).contains(&x) && (top..bottom).contains(&y)
 }
 
 /// Esc, wherever the keyboard is: the page decides whether it closes a list or the panel.
@@ -336,7 +346,12 @@ pub struct Ask {
 }
 
 pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
-    let text = JOB.lock().unwrap().as_ref().map(|job| job.view.text.clone()).ok_or("Панель уже закрыта")?;
+    let (seq, text) = JOB
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|job| (job.view.seq, job.view.text.clone()))
+        .ok_or("Панель уже закрыта")?;
     let settings = app.state::<AppState>().settings();
     let prompt = match ask.action.as_str() {
         "compose" => {
@@ -362,6 +377,11 @@ pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     if let Some(previous) = RUNNING.lock().unwrap().replace(cancel.clone()) {
         previous.store(true, Ordering::SeqCst);
+    }
+    // A close or "Back" before the flag was in place had nothing to cancel.
+    if !JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq) {
+        cancel_running();
+        return Err("Панель уже закрыта".into());
     }
     let flag = cancel.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {

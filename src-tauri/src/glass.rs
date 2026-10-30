@@ -239,7 +239,14 @@ mod imp {
             return;
         }
         fade(window, 0, 6, 0, |window| {
-            let _ = window.hide();
+            // `show` runs on the main thread: checked there, a show that came in
+            // after the last frame can't be hidden by this fade.
+            let shown = window.clone();
+            let _ = window.run_on_main_thread(move || {
+                if GOAL.load(Ordering::SeqCst) == 0 {
+                    let _ = shown.hide();
+                }
+            });
         });
     }
 }

@@ -83,7 +83,7 @@ pub enum Fallback {
 }
 
 /// macOS positions windows in points, the others in physical pixels.
-const POINTS: bool = cfg!(target_os = "macos");
+pub const POINTS: bool = cfg!(target_os = "macos");
 
 /// A monitor's work area and scale, in the anchor's units.
 fn work_areas(app: &AppHandle) -> Vec<(Rect, f64)> {
@@ -105,11 +105,13 @@ fn work_areas(app: &AppHandle) -> Vec<(Rect, f64)> {
         .collect()
 }
 
-fn pointer(app: &AppHandle) -> Option<(f64, f64)> {
+/// The mouse pointer: in points on macOS, in physical pixels elsewhere.
+pub fn pointer(app: &AppHandle) -> Option<(f64, f64)> {
     let p = app.cursor_position().ok()?;
     if POINTS {
-        // The cursor comes in physical pixels of the screen it is on.
-        let scale = app.monitor_from_point(p.x, p.y).ok().flatten().map_or(1.0, |m| m.scale_factor());
+        // Tao turns the pointer's points into pixels at the primary screen's
+        // scale, whichever screen the pointer is on.
+        let scale = app.primary_monitor().ok().flatten().map_or(1.0, |m| m.scale_factor());
         Some((p.x / scale, p.y / scale))
     } else {
         Some((p.x, p.y))
