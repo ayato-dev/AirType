@@ -275,8 +275,9 @@ mod tests {
         // No room below: above it.
         let low = rect(600.0, 950.0, 120.0, 20.0);
         assert_eq!(position(Spot::Under(low), area, 1.0, 420.0, 200.0), (600.0, 742.0));
-        // At 150% a logical gap is 12 pixels.
-        assert_eq!(position(Spot::Under(selection), area, 1.5, 420.0, 200.0), (600.0, 322.0));
+        // At 150% a logical gap is 12 pixels; macOS works in points, where it stays 8.
+        let gap = if POINTS { 8.0 } else { 12.0 };
+        assert_eq!(position(Spot::Under(selection), area, 1.5, 420.0, 200.0), (600.0, 310.0 + gap));
         assert_eq!(position(Spot::Pointer((700.0, 300.0)), area, 1.0, 420.0, 200.0), (560.0, 320.0));
     }
 }
