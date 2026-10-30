@@ -223,7 +223,10 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .always_on_top(true)
         .skip_taskbar(true)
         .visible_on_all_workspaces(true)
-        .visible(false);
+        .visible(false)
+        // Windows: a webview built focused takes the focus while the window is still
+        // hidden, and losing it again closes the job before the page has asked for it.
+        .focused(cfg!(not(windows)));
     #[cfg(target_os = "macos")]
     let builder = builder.effects(tauri::utils::config::WindowEffectsConfig {
         effects: vec![tauri::window::Effect::Popover],
