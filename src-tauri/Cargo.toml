@@ -2,6 +2,7 @@
 name = "airtype"
 version = "0.3.0"
 description = "Lightweight AI translator and editor for any text field"
+license = "MIT"
 edition = "2021"
 rust-version = "1.80"
 
