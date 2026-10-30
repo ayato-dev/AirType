@@ -32,11 +32,12 @@ impl Rect {
         (self.x + self.w / 2.0, self.y + self.h / 2.0)
     }
 
-    /// The part of the rectangle inside `area`; `None` when they don't meet.
+    /// The part of the rectangle inside `area`; `None` when they don't meet. A caret
+    /// is a line with no width, and stays one.
     fn clip(&self, area: &Rect) -> Option<Rect> {
         let (x, y) = (self.x.max(area.x), self.y.max(area.y));
         let (right, bottom) = (self.right().min(area.right()), self.bottom().min(area.bottom()));
-        (right > x && bottom > y).then_some(Rect { x, y, w: right - x, h: bottom - y })
+        (right >= x && bottom > y).then_some(Rect { x, y, w: right - x, h: bottom - y })
     }
 }
 
@@ -117,7 +118,7 @@ fn pointer(app: &AppHandle) -> Option<(f64, f64)> {
 
 /// Where the window stands.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Spot {
+pub enum Spot {
     /// Under this rectangle, or above it when the screen ends below.
     Under(Rect),
     /// Under the mouse pointer.
@@ -158,6 +159,12 @@ fn spot(
     }
 }
 
+/// Decides where a window goes, with the mouse where it is now. A window that
+/// changes size later keeps the spot: by then the mouse may be over the window itself.
+pub fn locate(app: &AppHandle, anchor: Option<Anchor>, fallback: Fallback) -> Spot {
+    spot(&work_areas(app), anchor, pointer(app), fallback)
+}
+
 /// Puts a window of the given logical size next to the anchor.
 pub fn place(
     app: &AppHandle,
@@ -167,13 +174,16 @@ pub fn place(
     anchor: Option<Anchor>,
     fallback: Fallback,
 ) {
+    put(app, window, width, height, locate(app, anchor, fallback));
+}
+
+/// Puts a window of the given logical size at a spot.
+pub fn put(app: &AppHandle, window: &WebviewWindow, width: f64, height: f64, spot: Spot) {
     let areas = work_areas(app);
-    let pointer = pointer(app);
-    let spot = spot(&areas, anchor, pointer, fallback);
     let point = match spot {
         Spot::Under(r) => Some(r.center()),
         Spot::Pointer(p) => Some(p),
-        Spot::BottomCenter => pointer,
+        Spot::BottomCenter => pointer(app),
     };
     let Some((area, scale)) = point
         .and_then(|(x, y)| areas.iter().find(|(r, _)| r.contains(x, y)).copied())
@@ -232,6 +242,8 @@ mod tests {
         let screen = Rect { x: 0.0, y: 0.0, w: 50.0, h: 40.0 };
         assert_eq!(r.clip(&screen), Some(Rect { x: 10.0, y: 20.0, w: 40.0, h: 20.0 }));
         assert_eq!(Rect { x: 60.0, ..r }.clip(&screen), None);
+        let caret = Rect { x: 30.0, y: 10.0, w: 0.0, h: 18.0 };
+        assert_eq!(caret.clip(&screen), Some(caret));
     }
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {

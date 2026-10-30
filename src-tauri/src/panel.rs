@@ -14,7 +14,7 @@ use crate::{
     glass, hotkeys, hud,
     input::{self, Front, Target},
     llm,
-    popup::{self, Anchor, Fallback},
+    popup::{self, Anchor, Fallback, Spot},
     state::AppState,
 };
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,8 @@ struct Job {
     view: View,
     /// The hotkey's thread, waiting to write the answer; none for a bare answer.
     reply: Option<Sender<Reply>>,
-    anchor: Option<Anchor>,
+    /// Decided when the panel opens: once it is up the mouse is over the panel itself.
+    spot: Spot,
     target: Target,
     /// Had focus once: losing it after that means the user went elsewhere.
     focused: bool,
@@ -101,9 +102,10 @@ fn session(app: &AppHandle) -> Result<(), String> {
     };
     let (sender, replies) = mpsc::channel();
     let writable = source.editable != Some(false);
-    let anchor = source.anchor(cx.anchor);
+    // Where the selection was; the answer that can't go in later stands there too.
+    let spot = popup::locate(app, source.anchor(cx.anchor), Fallback::Pointer);
     let seq =
-        open(app, mode, source.text.clone(), String::new(), None, writable, Some(sender), anchor, cx.target)?;
+        open(app, mode, source.text.clone(), String::new(), None, writable, Some(sender), spot, cx.target)?;
 
     let opened = Instant::now();
     loop {
@@ -112,7 +114,7 @@ fn session(app: &AppHandle) -> Result<(), String> {
                 return match engine::write(&source, &text, cx.target)? {
                     Written::Done => Ok(()),
                     Written::Missed(why) => {
-                        show_answer(app, source.text, text, Some(why), anchor, cx.target);
+                        answer_at(app, source.text, text, Some(why), spot, cx.target);
                         Ok(())
                     }
                 };
@@ -140,8 +142,13 @@ pub fn show_answer(
     anchor: Option<Anchor>,
     target: Target,
 ) {
+    let spot = popup::locate(app, anchor, Fallback::Pointer);
+    answer_at(app, text, answer, note, spot, target);
+}
+
+fn answer_at(app: &AppHandle, text: String, answer: String, note: Option<&str>, spot: Spot, target: Target) {
     let note = note.map(str::to_string);
-    if let Err(e) = open(app, "answer", text, answer, note, false, None, anchor, target) {
+    if let Err(e) = open(app, "answer", text, answer, note, false, None, spot, target) {
         hud::error(app, &e);
     }
 }
@@ -155,7 +162,7 @@ fn open(
     note: Option<String>,
     writable: bool,
     reply: Option<Sender<Reply>>,
-    anchor: Option<Anchor>,
+    spot: Spot,
     target: Target,
 ) -> Result<u64, String> {
     let settings = app.state::<AppState>().settings();
@@ -175,7 +182,7 @@ fn open(
         target_lang: settings.target_lang.trim().to_string(),
         secondary_lang: settings.secondary_lang.trim().to_string(),
     };
-    *JOB.lock().unwrap() = Some(Job { view, reply, anchor, target, focused: false, shown: false });
+    *JOB.lock().unwrap() = Some(Job { view, reply, spot, target, focused: false, shown: false });
     let window = window(app)?;
     // The theme may have changed since the last time.
     glass::acrylic(&window);
@@ -221,16 +228,16 @@ pub fn view() -> Option<View> {
 
 /// The page has laid itself out at this size (logical pixels): place and show.
 pub fn fit(app: &AppHandle, seq: u64, height: f64) {
-    let (anchor, target, first) = {
+    let (spot, target, first) = {
         let mut job = JOB.lock().unwrap();
         let Some(job) = job.as_mut().filter(|job| job.view.seq == seq) else { return };
         let first = !job.shown;
         job.shown = true;
-        (job.anchor, job.target, first)
+        (job.spot, job.target, first)
     };
     let Some(window) = app.get_webview_window(LABEL) else { return };
     let _ = window.set_size(LogicalSize::new(WIDTH, height));
-    popup::place(app, &window, WIDTH, height, anchor, Fallback::Pointer);
+    popup::put(app, &window, WIDTH, height, spot);
     glass::show(&window);
     let _ = window.set_focus();
     if first {
