@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  One of Airtype's own small windows (the panel or the HUD) inside a scene.
+  It loads the app's real stylesheet; the scene fills it with the same markup
+  src/panel.ts and src/hud.ts build, and draws the system glass behind it.
+-->
+<html lang="ru" data-glass="native">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      const kind = new URLSearchParams(location.search).get("kind") === "hud" ? "hud" : "panel";
+      document.write(`<link rel="stylesheet" href="../../src/styles/${kind}.css" />`);
+    </script>
+    <style>
+      /* The scene sets every moving part itself, frame by frame. */
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+      .working-text::before,
+      .slip-text::before {
+        clip-path: var(--clip, inset(0 100% 0 0)) !important;
+      }
+      /* :hover, :active and :focus-visible, set by hand where the pointer is. */
+      [data-hover].verb,
+      [data-hover].word,
+      [data-hover].choice {
+        background: var(--hover);
+      }
+      [data-hover].btn-mark {
+        background: var(--marker-strong);
+      }
+      [data-hover].link {
+        text-decoration-color: var(--marker-strong);
+      }
+      [data-press].btn-mark {
+        transform: scale(0.98);
+      }
+      [data-focus].verb,
+      [data-focus].word,
+      [data-focus].choice {
+        background: var(--marker);
+        color: var(--marker-ink);
+      }
+      [data-focus].input {
+        background: var(--field-focus);
+        box-shadow: inset 0 0 0 1.5px var(--ink);
+      }
+      /* The request field is a textarea in the app; here it is a box that can show a caret. */
+      .request {
+        height: auto;
+        min-height: 44px;
+        padding: 11px 13px;
+        font-size: 16px;
+        line-height: 22px;
+        white-space: pre-wrap;
+      }
+      .request .hint {
+        color: var(--faint);
+      }
+      .caret {
+        display: inline-block;
+        width: 1.5px;
+        height: 19px;
+        margin-right: -1.5px;
+        vertical-align: -4px;
+        background: var(--ink);
+      }
+      .caret.off {
+        visibility: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel" id="panel"></main>
+    <div class="slip" id="slip" hidden><span class="slip-text" id="text"></span></div>
+  </body>
+</html>
