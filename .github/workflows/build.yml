@@ -90,9 +90,22 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev libssl-dev patchelf
       - run: npm ci
       # Signs the update bundles (.sig next to each); the app checks them
-      # against the public key in tauri.conf.json.
-      - run: npx tauri build ${{ matrix.args }}
+      # against the public key in tauri.conf.json. Without the key a release
+      # stops here; any other build still makes installers, just no updates.
+      - name: Build
+        shell: bash
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npx tauri build ${{ matrix.args }}
+          elif [ "$RELEASE" = true ]; then
+            echo "::error::the TAURI_SIGNING_PRIVATE_KEY secret is empty, so updates can't be signed"
+            exit 1
+          else
+            echo "::warning::the TAURI_SIGNING_PRIVATE_KEY secret is empty; building without update bundles"
+            npx tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          fi
         env:
+          RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.release }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - uses: actions/upload-artifact@v4
