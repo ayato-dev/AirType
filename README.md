@@ -5,195 +5,242 @@
 <h1 align="center">Airtype</h1>
 
 <p align="center">
-  Переводчик и редактор для любого поля ввода.<br />
-  Пишешь как обычно, жмёшь сочетание клавиш, и текст в поле меняется на перевод или исправленную версию.
+  Translator and text editor for any input field.
 </p>
 
 <p align="center">
-  <a href="https://github.com/ayato-dev/AirType/releases/latest"><b>Скачать</b></a> для Windows, macOS и Linux
+  <a href="https://github.com/ayato-dev/AirType/releases/latest">Download</a> for Windows, macOS and Linux
+</p>
+
+<p align="center">
+  English | <a href="README.ru.md">Русский</a>
 </p>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/translate-dark.webp" />
-  <img src="docs/media/translate-light.webp" alt="В мессенджере набрано сообщение по-русски. После Ctrl+Alt+T под полем появляется ярлычок «Перевожу…», и через секунду в поле стоит тот же текст по-английски." />
+  <img src="docs/media/translate-light.webp" alt="A message typed in Russian in a messenger. After Ctrl+Alt+T a status label appears under the field, and a second later the field holds the same text in English." />
 </picture>
 
-Это перевод: `Ctrl+Alt+T` на Windows и Linux, `⌘⌥T` на Mac. Текст на русском уходит на английский, английский переводится на русский. Оба языка меняются в настройках: можно выбрать из списка или вписать любой другой.
+Airtype runs in the tray and works in messengers, browsers, mail clients, editors and other apps with an input field. It reads the text from the field, sends it to the model you chose and writes the answer back. `Ctrl+Z` undoes the replacement.
 
-Работает в мессенджерах, браузере, почте, редакторах и других приложениях с полем ввода. Ничего не нужно копировать в отдельное окно: текст берётся из поля, где ты печатаешь, и туда же возвращается. Отменить замену можно обычным `Ctrl+Z`.
+## Actions
 
-## Что ещё умеет
+### Translate
 
-### Исправить ошибки
+`Ctrl+Alt+T` on Windows and Linux, `⌘⌥T` on macOS. Russian text becomes English and English text becomes Russian. You can pick other languages in the settings or type any language name.
 
-`Ctrl+Alt+R` или `⌘⌥R`. Опечатки, запятые, орфография. Слова и тон остаются твоими, меняется только то, что было с ошибкой.
+### Fix mistakes
+
+`Ctrl+Alt+R` or `⌘⌥R`. Corrects typos, punctuation and spelling and leaves the rest of the text as it is.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/fix-dark.webp" />
-  <img src="docs/media/fix-light.webp" alt="Письмо с подчёркнутыми ошибками. После Ctrl+Alt+R запятые расставлены, опечатка исправлена, подчёркиваний больше нет." />
+  <img src="docs/media/fix-light.webp" alt="An email with underlined mistakes. After Ctrl+Alt+R the commas are in place, the typo is fixed and the underlines are gone." />
 </picture>
 
-### Переписать понятнее
+### Rewrite
 
-`Ctrl+Alt+E` или `⌘⌥E`. Для сообщений, набранных на бегу: та же мысль, тот же язык и примерно та же длина, но читается спокойно.
+`Ctrl+Alt+E` or `⌘⌥E`. Makes a hastily typed message easier to read. The meaning, language and approximate length stay the same.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/improve-dark.webp" />
-  <img src="docs/media/improve-light.webp" alt="Сообщение «короче глянул, в целом норм…» после Ctrl+Alt+E становится «Посмотрел, в целом хорошо. До пятницы стоит поправить две вещи…» и уходит в чат." />
+  <img src="docs/media/improve-light.webp" alt="A rough chat message in Russian. After Ctrl+Alt+E it becomes a clearer version of the same message and is sent to the chat." />
 </picture>
 
-### Написать за тебя
+### Write for me
 
-`Ctrl+Alt+Space` или `⌘⌥A` в пустом поле. Под полем открывается панель: пишешь своими словами, что нужно ответить, выбираешь язык и тон. Готовый текст сначала показывается в панели, а «Вставить» ставит его в поле. Панель появляется плавно и закрывается как меню: по Esc, по клику мимо или когда переключаешься в другое окно. Если закрыть её, пока модель думает, запрос отменяется.
+`Ctrl+Alt+Space` or `⌘⌥A` in an empty field opens a panel under the field. Describe what to write, then choose a language and tone. The panel shows the result, and its `Вставить` (Insert) button puts the text in the field.
+
+Esc, a click outside the panel or switching to another window closes it. Closing it while the model is working cancels the request.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/compose-dark.webp" />
-  <img src="docs/media/compose-light.webp" alt="В пустом поле открывается панель. В ней набрано «откажись от пятницы, предложи понедельник после двух», выбран тон «дружелюбно». Панель пишет вежливый ответ, он вставляется в поле." />
+  <img src="docs/media/compose-light.webp" alt="A panel opens over an empty field. The request says to decline Friday and suggest Monday afternoon, with a friendly tone selected. The panel writes a polite reply, and the reply goes into the field." />
 </picture>
 
-### Прочитать на своём языке
+### Work with selected text
 
-Выдели текст где угодно, даже на сайте, где его не поменять, и нажми то же `Ctrl+Alt+Space`. Панель предложит перевести, исправить, улучшить, сделать твоё действие или то, что впишешь сам. Панель встаёт прямо под выделенным текстом, а если программа не говорит, где он (Telegram, многие чаты), то под мышкой. Ответ можно скопировать, а если текст был в поле ввода, заменить им выделенное.
+Select text anywhere, including pages where it can't be edited, and press `Ctrl+Alt+Space` or `⌘⌥A`. The panel offers translate, fix, improve, your own actions and a field for a one-off instruction.
+
+The panel opens under the selection. If the app doesn't report where the selection is (Telegram and many other chat apps), it opens under the mouse pointer. You can copy the answer, and if the text was in an input field you can replace the selection with it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/read-dark.webp" />
-  <img src="docs/media/read-light.webp" alt="На английской странице музея выделен абзац про часы работы. Панель под ним переводит его на русский, ответ копируется." />
+  <img src="docs/media/read-light.webp" alt="A paragraph about opening hours is selected on an English museum page. The panel under it translates the paragraph into Russian, and the answer is copied." />
 </picture>
 
-### Свои действия и модель
+### Custom actions and models
 
-В настройках можно добавить своё действие со своей инструкцией и своим сочетанием, например «сделай вежливее и короче». Там же меняются сочетания, языки и модель: Claude, любой сервис с API как у OpenAI или Qwen прямо на компьютере, без ключа и без интернета.
+You can add an action with its own instruction and hotkey in the settings, for example "make it more polite and shorter". Hotkeys, languages and the model are set there too. The available models are Claude, any service with an OpenAI-compatible API, and Qwen running on your computer with no key and no internet connection.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/settings-dark.webp" />
-  <img src="docs/media/settings-light.webp" alt="Два окна настроек. Слева список действий с сочетаниями: перевести, исправить, улучшить и своё действие «Вежливее». Справа выбрана модель на компьютере: Qwen3.5 2B скачана, 4B качается." />
+  <img src="docs/media/settings-light.webp" alt="Two settings windows. The left one lists actions with their hotkeys: translate, fix, improve and a custom action. The right one has the local model selected, with Qwen3.5 2B downloaded and 4B downloading." />
 </picture>
 
-## Где пригодится
+## Install
 
-| Ситуация | Что нажать |
+Installers are in the [latest release](https://github.com/ayato-dev/AirType/releases/latest).
+
+| System | File |
 |---|---|
-| Переписка с коллегой или клиентом на другом языке | `Ctrl+Alt+T` прямо в поле сообщения |
-| Письмо или заявление перед отправкой | `Ctrl+Alt+R` |
-| Сообщение набрано на бегу и читается коряво | `Ctrl+Alt+E` |
-| Надо ответить, а слова не складываются: отказ, перенос встречи, напоминание об оплате | `Ctrl+Alt+Space` в пустом поле |
-| Сайт, документация, отзыв или письмо от поддержки на чужом языке | выделить и `Ctrl+Alt+Space` |
-| Одна и та же правка много раз в день: короче, на «вы», по-деловому | своё действие со своим сочетанием |
-| Нет интернета или текст не должен уходить в облако | модель на компьютере |
+| Windows 10 and 11 | `Airtype_…_x64-setup.exe` (no admin rights needed) or `Airtype_…_x64_en-US.msi` |
+| macOS 11 or newer, Intel and Apple Silicon | `Airtype_…_universal.dmg` |
+| Linux on X11, Ubuntu 22.04 or newer, Debian | `Airtype_…_amd64.deb` |
+| Linux on X11, any distribution | `Airtype_…_amd64.AppImage` |
 
-## Установка
+After installing, open the settings from the tray icon, then paste an API key or download a local model.
 
-Установщики лежат в [последнем релизе](https://github.com/ayato-dev/AirType/releases/latest).
+The builds are not code signed yet, so the system shows a warning on first launch.
 
-| Система | Файл |
-|---|---|
-| Windows 10 и 11 | `Airtype_…_x64-setup.exe`, ставится без прав администратора, или `Airtype_…_x64_en-US.msi` |
-| macOS 11 и новее, Intel и Apple Silicon | `Airtype_…_universal.dmg` |
-| Linux на X11, Ubuntu 22.04 и новее, Debian | `Airtype_…_amd64.deb` |
-| Linux на X11, любой дистрибутив | `Airtype_…_amd64.AppImage` |
+### Windows
 
-С версии 0.3.0 Airtype обновляется сам: при запуске и потом раз в 12 часов он проверяет последний релиз, и если вышла новая версия, в трее и в настройках появляется «Обновить». Скачивает, ставит и перезапускается сам, а обновление подписано, так что подменить его по дороге нельзя. С 0.2.x на 0.3.0 установщик нужно поставить руками последний раз. Установка из `.deb` так не обновляется, её обновляют новым `.deb`. На Windows обновление ставится установщиком `.exe`, даже если Airtype ставили из `.msi`.
+SmartScreen reports an unknown publisher. Click "More info", then "Run anyway".
 
-После установки Airtype живёт в трее. Открой настройки, вставь ключ API или скачай модель на компьютер, и можно жать сочетания в любом поле.
+### macOS
 
-Сборки пока не подписаны, поэтому при первом запуске система предупредит.
-
-**Windows.** SmartScreen скажет про неизвестного издателя: «Подробнее», затем «Выполнить в любом случае».
-
-**macOS.** Перетащи Airtype в «Программы» и выполни один раз в Терминале:
+Drag Airtype to Applications and run this once in Terminal:
 
 ```sh
 xattr -cr /Applications/Airtype.app
 ```
 
-Потом дай Airtype «Универсальный доступ» в «Системные настройки → Конфиденциальность и безопасность». Без него приложение не может нажимать `⌘C` и `⌘V` за тебя. Пока сборка подписана ad-hoc, macOS считает каждое обновление новым приложением, и доступ приходится выдавать заново.
+Then allow Airtype in System Settings > Privacy & Security > Accessibility. It needs this to press `⌘C` and `⌘V`. The current ad-hoc signature makes macOS treat each update as a new app, so you have to grant the permission again after updating.
 
-**Linux.** Работает только в сессии X11, на Wayland сочетания клавиш не сработают. AppImage сначала сделай запускаемым: `chmod +x Airtype_*.AppImage`.
+### Linux
 
-## Сочетания
+Airtype works in X11 sessions only. Hotkeys don't work on Wayland. Make the AppImage executable before running it: `chmod +x Airtype_*.AppImage`.
 
-| Windows и Linux | macOS | Что делает |
+### Updates
+
+Since 0.3.0 Airtype checks the latest release at startup and every 12 hours. When a new version is out, an update item appears in the tray and in the settings. It downloads and installs the signed update, then restarts the app.
+
+- Going from 0.2.x to 0.3.0 takes one manual install.
+- A `.deb` install doesn't update itself. Install the new `.deb` instead.
+- On Windows the update uses the `.exe` installer, even if you installed from the `.msi`.
+
+## Hotkeys
+
+| Windows and Linux | macOS | Action |
 |---|---|---|
-| `Ctrl+Alt+T` | `⌘⌥T` | Перевести на твой язык (English по умолчанию), а текст, который уже на нём, на второй (Русский) |
-| `Ctrl+Alt+R` | `⌘⌥R` | Исправить орфографию, грамматику и пунктуацию |
-| `Ctrl+Alt+E` | `⌘⌥E` | Улучшить: переписать понятнее и естественнее |
-| `Ctrl+Alt+Space` | `⌘⌥A` | Панель под полем: «напиши за меня» или действия с выделенным текстом |
+| `Ctrl+Alt+T` | `⌘⌥T` | Translate into your language (English by default). Text already in that language goes into your second language (Russian by default) |
+| `Ctrl+Alt+R` | `⌘⌥R` | Fix spelling, grammar and punctuation |
+| `Ctrl+Alt+E` | `⌘⌥E` | Rewrite to read clearer and more naturally |
+| `Ctrl+Alt+Space` | `⌘⌥A` | Open the panel: write for me, or actions on the selected text |
 
-Если в поле выделен кусок, обработается только он. Если ничего не выделено, Airtype возьмёт всё содержимое поля, где стоит курсор. Пока модель думает, под полем висит ярлычок (если места снизу нет, то над полем). Все сочетания меняются в настройках.
+With part of a field selected, only that part is processed. With no selection, Airtype takes the whole field the caret is in. While the model is working, a status label stays under the field, or above it if there is no room below. You can change all hotkeys in the settings.
 
-## Модель и ключ
+## Models and keys
 
-Airtype работает с твоим собственным ключом. Ключ хранится в системной связке ключей (Keychain на macOS, диспетчер учётных данных на Windows, GNOME Keyring или KWallet на Linux), а не в файле.
+Airtype uses your own API key. Keys are stored in the system credential store: Keychain on macOS, Credential Manager on Windows, GNOME Keyring or KWallet on Linux.
 
-- **Claude.** Ключ берётся в [консоли Anthropic](https://platform.claude.com/settings/keys). По умолчанию стоит `claude-haiku-5-5` с низким усилием: он отвечает быстрее всех и стоит в разы дешевле. Если важнее качество текста, выбери `claude-opus-5-5`.
-- **OpenAI-совместимый.** OpenAI, OpenRouter (`https://openrouter.ai/api/v1`), локальные Ollama (`http://localhost:11434/v1`) и LM Studio. Для локальной модели ключ не нужен. Ключ уходит только по `https`, по `http` можно ходить лишь на `localhost`.
-- **Модель на компьютере.** Qwen3.5 2B (1,3 ГБ) или 4B (2,7 ГБ) через [llama.cpp](https://github.com/ggml-org/llama.cpp), скачивается прямо из настроек. Работает на видеокарте (на Windows и Linux через Vulkan, то есть на любой NVIDIA, AMD или Intel с обычным драйвером, на Mac с Apple Silicon через Metal), а без неё на процессоре. Пока модель запущена, она занимает 2–4 ГБ видеопамяти или оперативки, а через 10 минут без дела выгружается. Если модель не успела загрузиться на видеокарту, Airtype перезапускает её на процессоре. Видеокарту можно выключить переключателем «Аппаратное ускорение»: модель перейдёт на процессор, а видеопамять освободится сразу.
+### Claude
 
-Если API Anthropic недоступен из твоей страны, включи VPN, укажи свой прокси в «Модель → Свой адрес API» или используй OpenRouter.
+Get a key in the [Anthropic Console](https://platform.claude.com/settings/keys). The default is `claude-haiku-5-5` at low effort, the fastest and cheapest option. Choose `claude-opus-5-5` for better text.
 
-Текст уходит только в выбранный тобой API. Буфер обмена после вставки возвращается как был, со всеми форматами: картинки, файлы, форматированный текст. Поля паролей Airtype пропускает.
+If the Anthropic API isn't available in your country, use a VPN, set your own proxy in `Модель > Свой адрес API` (Model > Custom API address), or use OpenRouter.
 
-## Разработка
+### OpenAI-compatible API
 
-Нужны Rust (stable), Node.js 22 и [системные зависимости Tauri](https://tauri.app/start/prerequisites/).
+OpenAI, OpenRouter (`https://openrouter.ai/api/v1`), and local servers such as Ollama (`http://localhost:11434/v1`) and LM Studio. Local servers don't need a key. A key is sent over `https` only, and plain `http` is allowed only for `localhost`.
+
+### Local model
+
+Qwen3.5 2B (1.3 GB) or 4B (2.7 GB) through [llama.cpp](https://github.com/ggml-org/llama.cpp), downloaded from the settings.
+
+It runs on the GPU when there is one: Vulkan on Windows and Linux (NVIDIA, AMD or Intel with a regular driver), Metal on Apple Silicon. Otherwise it runs on the CPU. If the model doesn't load onto the GPU in time, Airtype restarts it on the CPU. The `Аппаратное ускорение` (Hardware acceleration) switch moves the model to the CPU and frees video memory at once.
+
+A running model takes 2 to 4 GB of video or system memory and unloads after 10 idle minutes.
+
+### What leaves your computer
+
+Text goes only to the API you selected. After a paste the clipboard is restored with all its formats, including images, files and formatted text. Airtype skips password fields.
+
+## Limitations
+
+- The interface is in Russian only.
+- In terminals Airtype works on selected text only. On Windows `Ctrl+C` with no selection would interrupt the running program, and `Ctrl+A` would take the whole history. Terminals built into editors, such as VS Code, are not detected as terminals.
+- On Linux, terminals use `Ctrl+Shift+C` and `Ctrl+Shift+V`. xterm and urxvt don't work because they have no hotkey that copies without interrupting the program.
+- On Windows the clipboard formats that hold GDI handles (metafiles, palettes) are not restored, and an image comes back as `CF_DIB`.
+- The accessibility API path hasn't been tested live across a wide range of apps. On macOS, Airtype asks Electron apps to build their accessibility tree for the length of one action and then turns it off.
+- Linux works in X11 sessions only, where Airtype catches hotkeys through X and sends `Ctrl+C` and `Ctrl+V` through XTest. Wayland lets apps do neither, so there Airtype works only in XWayland apps.
+- On Linux, field text is read through the clipboard only, and only text is restored to the clipboard after a paste.
+
+## Development
+
+You need Rust (stable), Node.js 22 and the [Tauri system dependencies](https://tauri.app/start/prerequisites/).
 
 ```sh
 npm install
-npm run tauri dev     # запуск с горячей перезагрузкой интерфейса
-npm run tauri build   # установщик в src-tauri/target/release/bundle
+npm run tauri dev     # run with hot reload for the interface
+npm run tauri build   # installer in src-tauri/target/release/bundle
 cd src-tauri && cargo test
 ```
 
-Новый релиз делается тегом: подними версию в `package.json`, `src-tauri/Cargo.toml` и `src-tauri/tauri.conf.json`, затем `git tag v0.3.0 && git push origin v0.3.0` или на вкладке **Actions** открой **build**, **Run workflow** с галочкой «release». GitHub Actions соберёт установщики на трёх системах, подпишет обновления и сам опубликует релиз вместе с `latest.json`, по которому приложение узнаёт о новой версии. Для подписи в секретах репозитория должен лежать закрытый ключ `TAURI_SIGNING_PRIVATE_KEY` (и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, если у ключа есть пароль), парный открытому из `plugins.updater.pubkey` в `tauri.conf.json`. Без ключа релиз не выйдет, а обычные сборки соберут установщики без обновлений. Текст релиза берётся из `.github/release-notes.md`. Сборки с каждого пуша в `main` тоже есть: вкладка **Actions**, запуск **build**, артефакты.
+### Releases
 
-Анимации и картинки в этом README нарисованы настоящими стилями приложения: сцены лежат в `docs/scenes`, окна Airtype в них загружают `src/styles`, а окно настроек это собранная страница настроек. После правок интерфейса их можно перерисовать командой `node docs/scenes/render.cjs` (нужны Playwright с Chromium и ffmpeg с libwebp).
+Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, then either run `git tag v0.3.0 && git push origin v0.3.0` or run the build workflow from the Actions tab with the release box checked.
+
+GitHub Actions builds the installers on all three systems, signs the updates and publishes the release with `latest.json`, which the app reads to find new versions. Release notes come from `.github/release-notes.md`. Every push to `main` also produces builds, available as artifacts of the build workflow.
+
+Signing needs the `TAURI_SIGNING_PRIVATE_KEY` repository secret, plus `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has a password. The key must match `plugins.updater.pubkey` in `tauri.conf.json`. A release fails without it, and regular builds produce installers with no updates.
+
+### README images
+
+The scenes in `docs/scenes` render the animations with the app's real styles: the Airtype windows load `src/styles`, and the settings window is the built settings page. To render them again after a UI change, run `node docs/scenes/render.cjs`. This needs Playwright with Chromium and ffmpeg with libwebp.
 
 <details>
-<summary><b>Подпись для macOS</b></summary>
+<summary>macOS code signing</summary>
 
-Чтобы «Универсальный доступ» и Keychain переживали обновления, нужна подпись Developer ID и нотаризация. Это делается один раз в своём аккаунте Apple Developer: получить сертификат «Developer ID Application», положить его и данные для нотаризации в секреты репозитория (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`), передать их в шаг `tauri build` и убрать `"signingIdentity": "-"` из `tauri.conf.json`. Подробно: https://v2.tauri.app/distribute/sign/macos/
+Accessibility permission and Keychain entries survive updates only with a Developer ID signature and notarization. To set this up once in your Apple Developer account:
+
+1. Get a "Developer ID Application" certificate.
+2. Add it and the notarization credentials to the repository secrets: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
+3. Pass them to the `tauri build` step.
+4. Remove `"signingIdentity": "-"` from `tauri.conf.json`.
+
+Details: https://v2.tauri.app/distribute/sign/macos/
 
 </details>
 
 <details>
-<summary><b>Как устроено</b></summary>
+<summary>Architecture</summary>
 
-Ядро на Rust (Tauri 2), интерфейс на чистом TypeScript без фреймворков.
+Rust core on Tauri 2, with an interface in plain TypeScript and no framework.
 
 ```
 src-tauri/src/
-  engine.rs   один прогон: берём текст, зовём модель, ставим ответ на место
-  panel.rs    панель под полем: «напиши за меня» и действия с выделенным
-  local.rs    модель на компьютере: скачивание llama.cpp и Qwen, запуск сервера
-  popup.rs    где показать ярлычок и панель: под текстом, над ним или под мышкой
-  glass.rs    стекло под окнами (acrylic на Windows) и плавное появление панели
-  field.rs    текст поля через accessibility API (AX на macOS, UI Automation на Windows)
-  input.rs    нажатия Ctrl/Cmd+C, A, V по физическим кодам клавиш (работает в любой раскладке; на Linux через XTest)
-  clipboard.rs снимок буфера обмена со всеми форматами и возврат как было
-  llm.rs      Claude Messages API, OpenAI-совместимый chat/completions и модель на компьютере
-  hotkeys.rs  глобальные сочетания, срабатывают на отпускание клавиши
-  hud.rs      ярлычок под полем, который никогда не забирает фокус
-  update.rs   обновления из релизов: проверка, скачивание, установка
-  config.rs   настройки (JSON в папке приложения) и ключи (системная связка ключей)
-  tray.rs     иконка в трее: настройки, пауза, выход
-src/          окно настроек, ярлычок и панель (TypeScript + CSS)
-design/       исходники иконки и значка в трее
-docs/scenes/  сцены для анимаций в README
+  engine.rs   one run: read the text, call the model, write the answer back
+  panel.rs    the panel under the field: "write for me" and actions on a selection
+  local.rs    local model: downloads llama.cpp and Qwen, runs the server
+  popup.rs    where the label and panel go: under the text, above it or under the mouse
+  glass.rs    glass under the windows (acrylic on Windows) and the panel's fade
+  field.rs    field text through accessibility APIs (AX on macOS, UI Automation on Windows)
+  input.rs    Ctrl/Cmd+C, A, V by physical key code (any keyboard layout; XTest on Linux)
+  clipboard.rs clipboard snapshot with all formats, and restoring it
+  llm.rs      Claude Messages API, OpenAI-compatible chat/completions, local model
+  hotkeys.rs  global hotkeys, fired on key release
+  hud.rs      the status label under the field, which never takes focus
+  update.rs   updates from releases: check, download, install
+  config.rs   settings (JSON in the app folder) and keys (system credential store)
+  tray.rs     tray icon: settings, pause, quit
+src/          settings window, label and panel (TypeScript + CSS)
+design/       icon and tray icon sources
+docs/scenes/  scenes for the README animations
 ```
 
-Окно настроек на macOS стоит на системном стекле (Liquid Glass в macOS 26, на старых версиях обычная полупрозрачная подложка), на Windows на acrylic. Идея интерфейса взята у корректора: единственный цвет это маркер, выбранное выделено им, а в замечаниях проблемное место подчёркнуто волной, как опечатка. Шрифт Ysabeau Office лежит внутри приложения (`src/assets/fonts`, лицензия OFL), сеть для интерфейса не нужна.
+The settings window uses system glass on macOS (Liquid Glass on macOS 26, a translucent backing on older versions) and acrylic on Windows. The interface borrows from proofreading: the only accent color is a highlighter, the selected item is marked with it, and messages underline the problem with a wavy line. The Ysabeau Office font ships with the app (`src/assets/fonts`, OFL license), so the interface needs no network.
 
-Текст Airtype сначала спрашивает у самого поля через accessibility API: так буфер обмена не трогается, видно, выделено что-то или нет, а поля паролей пропускаются совсем. На macOS ответ тоже пишется прямо в поле (в веб-страницах вставкой, так страница его точно заметит). Короткий ответ в одну строку Airtype просто печатает, как будто набираешь его сам. Длинный на Windows вставляется через `Ctrl+V`, чтобы работала отмена, но в буфер обмена кладётся только обещание: текст отдаётся в момент, когда приложение его попросит, и сразу после этого буфер возвращается как был, так что скопированное раньше не теряется. Если приложение не рассказывает о своих полях, Airtype по-старому жмёт `Ctrl/Cmd+C` и тут же возвращает буфер обратно, ещё до запроса к модели. А если текст поменялся, пока модель думала, или вставить некуда, ответ не вставляется поверх, а показывается в панели, откуда его можно скопировать.
+Airtype first asks the field for its text through the accessibility API. This leaves the clipboard alone, shows whether anything is selected and lets Airtype skip password fields. On macOS the answer is also written directly to the field, and on web pages by pasting, so the page registers the change. A short one-line answer is typed as keystrokes.
 
-Временные данные в буфере помечаются так, чтобы не попадать в историю (Win+V и менеджеры буфера на macOS). Если ответ модели обрезан по лимиту, он не вставляется.
+On Windows a longer answer goes in with `Ctrl+V` so undo works. The clipboard holds only a promise: the text is handed over when the app asks for it, and the previous contents are restored right after. If an app doesn't expose its fields, Airtype presses `Ctrl/Cmd+C` and restores the clipboard before it calls the model. If the text changed while the model was working, or there is nowhere to paste, the answer appears in the panel to be copied.
 
-Окно настроек создаётся, только когда его открываешь, и закрывается полностью, так что в фоне Airtype не держит лишний веб-движок. Если файл настроек не прочитался, Airtype откладывает его рядом и говорит об этом, а не затирает.
+Temporary clipboard data is marked to stay out of clipboard history (Win+V and clipboard managers on macOS). An answer cut off by the model's limit is not inserted.
+
+The settings window is created when you open it and destroyed when you close it, so no extra web engine runs in the background. If the settings file can't be read, Airtype moves it aside and reports the problem.
 
 </details>
 
-## Ограничения
+## License
 
-- В терминалах Airtype работает только с выделенным текстом: на Windows `Ctrl+C` без выделения прервал бы запущенную программу, а `Ctrl+A` взял бы всю историю. Встроенные терминалы редакторов (VS Code и т. п.) так не распознаются. На Linux в терминалах Airtype копирует и вставляет через `Ctrl+Shift+C`/`Ctrl+Shift+V`, а в xterm и urxvt не работает: там нет сочетания, которое копирует и не прерывает программу.
-- На Windows из буфера не восстанавливаются форматы, которые хранят не данные, а дескрипторы GDI (метафайлы, палитры); картинка возвращается как `CF_DIB`.
-- Путь через accessibility API ещё не проверен вживую на разных приложениях; Electron-приложения на macOS Airtype на время одного действия просит построить дерево доступности, а потом выключает его обратно.
-- Linux работает только в сессии X11: там сочетания ловятся через X, а `Ctrl+C`/`Ctrl+V` нажимаются через XTest. На Wayland система не даёт приложениям ни ловить глобальные сочетания, ни нажимать клавиши за тебя, так что там Airtype сработает лишь в приложениях под XWayland. Текст из полей берётся только через буфер обмена, и после вставки в нём восстанавливается только текст.
+[MIT](LICENSE). The Ysabeau Office font is under the [OFL](src/assets/fonts/OFL.txt).
