@@ -1,0 +1,312 @@
+/* The README scenes: other people's apps drawn plainly, Airtype's windows on top. */
+@import "../../src/styles/tokens.css";
+
+:root {
+  --desk: #e7e5de;
+  --win: #ffffff;
+  --win-edge: rgba(20, 20, 20, 0.09);
+  --win-shadow: 0 1px 2px rgba(20, 20, 20, 0.06), 0 24px 48px -24px rgba(20, 20, 20, 0.32);
+  --text: #1d1d1f;
+  --soft: #8a8a8e;
+  --line: rgba(20, 20, 20, 0.07);
+  --well: #f1f1f2;
+  --bubble-in: #f0f0f1;
+  --bubble-out: #dcebfc;
+  --selection: #b4d5fe;
+  --typo: #e0353b;
+
+  /* What the system draws under Airtype's small windows: acrylic or vibrancy. */
+  --glass: rgba(246, 246, 243, 0.76);
+  --glass-rim: rgba(20, 20, 20, 0.12);
+  --glass-light: rgba(255, 255, 255, 0.75);
+  --glass-shadow: 0 2px 6px rgba(20, 20, 20, 0.08), 0 16px 36px -14px rgba(20, 20, 20, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --desk: #17181a;
+    --win: #232427;
+    --win-edge: rgba(255, 255, 255, 0.08);
+    --win-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 24px 48px -20px rgba(0, 0, 0, 0.8);
+    --text: #ececee;
+    --soft: #8e8e93;
+    --line: rgba(255, 255, 255, 0.07);
+    --well: #2e2f33;
+    --bubble-in: #2e2f33;
+    --bubble-out: #2a3a52;
+    --selection: #2f5f96;
+    --typo: #ff6b6b;
+
+    --glass: rgba(34, 34, 36, 0.74);
+    --glass-rim: rgba(255, 255, 255, 0.11);
+    --glass-light: rgba(255, 255, 255, 0.08);
+    --glass-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 18px 40px -14px rgba(0, 0, 0, 0.75);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent;
+}
+
+#stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--desk);
+  color: var(--text);
+  font: 400 16px/1.4 Inter, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- someone else's window ---------- */
+
+.win {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--win);
+  box-shadow: 0 0 0 1px var(--win-edge), var(--win-shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 16px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 16px;
+}
+
+.head b {
+  font-weight: 600;
+}
+
+.head span {
+  color: var(--soft);
+}
+
+/* messenger */
+
+/* A long chat scrolls: the newest messages stay, the oldest go under the header. */
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px 22px;
+}
+
+.msg {
+  flex: none;
+  max-width: 78%;
+  padding: 10px 16px 11px;
+  border-radius: 18px;
+  background: var(--bubble-in);
+  font-size: 16.5px;
+  line-height: 23px;
+}
+
+.msg.out {
+  align-self: flex-end;
+  background: var(--bubble-out);
+}
+
+.chat-foot {
+  flex: none;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.field {
+  position: relative;
+  min-height: 46px;
+  padding: 11px 20px 12px;
+  border-radius: 23px;
+  background: var(--well);
+  font-size: 16.5px;
+  line-height: 23px;
+  white-space: pre-wrap;
+}
+
+.ph {
+  color: var(--soft);
+}
+
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 20px;
+  margin: 0 -2px 0 0;
+  vertical-align: -4px;
+  background: var(--text);
+}
+
+.caret.off {
+  visibility: hidden;
+}
+
+/* mail */
+
+.mail-row {
+  flex: none;
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  margin: 0 22px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+}
+
+.mail-row > span:first-child {
+  width: 44px;
+  color: var(--soft);
+}
+
+.mail-body {
+  flex: 1;
+  margin: 0 22px;
+  padding: 18px 0;
+  font-size: 16.5px;
+  line-height: 26px;
+  white-space: pre-wrap;
+}
+
+.typo {
+  text-decoration: underline wavy var(--typo);
+  text-decoration-thickness: 1.3px;
+  text-underline-offset: 4px;
+  text-decoration-skip-ink: none;
+}
+
+/* browser */
+
+.url {
+  flex: none;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.url span {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 16px;
+  background: var(--well);
+  color: var(--soft);
+  font-size: 14px;
+}
+
+article {
+  padding: 26px 40px;
+  font: 400 18px/29px "Iowan Old Style", Charter, "Bitstream Charter", Georgia, "DejaVu Serif", serif;
+}
+
+article h1 {
+  margin: 0 0 12px;
+  font-size: 30px;
+  line-height: 38px;
+  font-weight: 700;
+}
+
+article p {
+  margin: 0 0 14px;
+}
+
+.w.sel {
+  background: var(--selection);
+}
+
+/* ---------- Airtype's windows: the app's own page on the system glass ---------- */
+
+.aw {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(1.6);
+  backdrop-filter: blur(26px) saturate(1.6);
+  box-shadow:
+    inset 0 0 0 1px var(--glass-rim),
+    inset 0 1px 0 var(--glass-light),
+    var(--glass-shadow);
+  visibility: hidden;
+}
+
+.aw.hud {
+  border-radius: 10px;
+}
+
+/* The settings page tints its own glass and draws its own rim (Windows 11: 8px corners). */
+.aw.settings {
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: var(--glass-shadow);
+}
+
+.aw iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* ---------- the keys being pressed ---------- */
+
+.keys {
+  position: absolute;
+  display: flex;
+  gap: 8px;
+  visibility: hidden;
+}
+
+.key {
+  min-width: 46px;
+  height: 42px;
+  padding: 0 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--key-face);
+  box-shadow:
+    0 0 0 1px var(--key-edge),
+    0 3px 0 1px var(--key-edge),
+    0 10px 22px -12px rgba(0, 0, 0, 0.35);
+  font: 650 17px/1 var(--font);
+  color: var(--ink);
+}
+
+/* A pressed key is marked, like the recording chip in the settings. */
+.key.down {
+  background: var(--marker);
+  color: var(--marker-ink);
+  box-shadow:
+    0 0 0 1px var(--key-edge),
+    0 1px 0 1px var(--key-edge);
+  transform: translateY(2px);
+}
+
+/* ---------- the pointer ---------- */
+
+.pointer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22px;
+  height: 28px;
+  transform-origin: 3px 3px;
+  pointer-events: none;
+}
