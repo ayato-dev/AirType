@@ -120,6 +120,10 @@ mod imp {
     pub fn acrylic(window: &WebviewWindow, dark: bool) {
         let Some(hwnd) = hwnd(window) else { return };
         round(window);
+        // Tao's shadow keeps a hidden frame around the page, and the acrylic fills it
+        // once Windows stops drawing that frame: a chin under the text. With no frame
+        // the glass is exactly the page, and the system still draws its shadow.
+        let _ = window.set_shadow(false);
         let set: Option<SetWindowCompositionAttribute> = unsafe {
             let user32 = GetModuleHandleW(windows_sys::w!("user32.dll"));
             if user32.is_null() {
