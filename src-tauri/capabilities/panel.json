@@ -4,7 +4,7 @@
   "description": "The panel under the text: its own view, requests and answer",
   "windows": ["panel"],
   "permissions": [
-    "core:event:default",
+    "core:event:allow-listen", "core:event:allow-unlisten",
     "allow-panel-view",
     "allow-panel-fit",
     "allow-panel-run",

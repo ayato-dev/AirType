@@ -586,16 +586,16 @@ fn launch(app: &AppHandle, model: &'static Model) -> Result<Server, String> {
         match result {
             Ok(mut s) => {
                 s.model = model.id.into();
-                s.pid_file = root.join("server.pid");
-                let _ = fs::write(&s.pid_file, s.child.id().to_string());
                 return Ok(s);
             }
             Err(Failed::Port) if port_retries > 0 => port_retries -= 1,
-            Err(Failed::Exited) if gpu => {
+            // A driver that can't load the model, or stalls on it: the processor can.
+            Err(Failed::Exited | Failed::Slow) if gpu => {
                 GPU.store(false, Ordering::SeqCst);
                 gpu = false;
             }
             Err(Failed::Port | Failed::Exited) => return Err(DIED.into()),
+            Err(Failed::Slow) => return Err("Модель слишком долго загружается".into()),
             Err(Failed::Other(message)) => return Err(message),
         }
     }
@@ -613,6 +613,8 @@ enum Failed {
     Port,
     /// The server quit on its own: it couldn't load the model.
     Exited,
+    /// Still not loaded after two minutes.
+    Slow,
     /// Anything else, with what to tell the user.
     Other(String),
 }
@@ -646,10 +648,14 @@ fn start(exe: &Path, model_file: &Path, log: &Path, fresh_log: bool, gpu: bool) 
         .stderr(log_file.map_or_else(Stdio::null, Stdio::from));
     let child = platform::spawn(command).map_err(|e| Failed::Other(format!("Модель не запустилась: {e}")))?;
     platform::adopt(&child);
-    let mut s = Server { child, port, model: String::new(), used: Instant::now(), pid_file: PathBuf::new() };
+    // Written at once: a crash while the model loads must not leave it unknown.
+    let pid_file = log.with_file_name("server.pid");
+    let _ = fs::write(&pid_file, child.id().to_string());
+    let mut s = Server { child, port, model: String::new(), used: Instant::now(), pid_file };
     fn kill(s: &mut Server, failed: Failed) -> Failed {
         let _ = s.child.kill();
         let _ = s.child.wait();
+        let _ = fs::remove_file(&s.pid_file);
         failed
     }
 
@@ -663,13 +669,14 @@ fn start(exe: &Path, model_file: &Path, log: &Path, fresh_log: bool, gpu: bool) 
             return Err(kill(&mut s, Failed::Other(QUIT.into())));
         }
         if !matches!(s.child.try_wait(), Ok(None)) {
+            let _ = fs::remove_file(&s.pid_file);
             return Err(exit_reason(log, log_from));
         }
         if healthy(port) && matches!(s.child.try_wait(), Ok(None)) {
             return Ok(s);
         }
         if start.elapsed() > Duration::from_secs(120) {
-            return Err(kill(&mut s, Failed::Other("Модель слишком долго загружается".into())));
+            return Err(kill(&mut s, Failed::Slow));
         }
         thread::sleep(Duration::from_millis(250));
     }

@@ -3,5 +3,5 @@
   "identifier": "hud",
   "description": "The HUD slip: hears its events and reports its size",
   "windows": ["hud"],
-  "permissions": ["core:event:default", "allow-hud-fit"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-hud-fit"]
 }

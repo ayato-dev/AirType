@@ -87,18 +87,17 @@ mod imp {
             && !(0x200..=0x3FF).contains(&format)
     }
 
-    /// Formats Windows makes from one another. Asking for a made one forces the
-    /// conversion (a large picture twice over), and Windows makes it again from
-    /// the one we keep. The app's own format comes first in the enumeration.
+    /// Formats Windows makes from one another, best first. Asking for a made
+    /// one forces the conversion (a large picture twice over), and Windows makes
+    /// the lesser ones again from the best one we keep. An app may put several
+    /// itself, so the best one offered is kept whatever the order.
     const DERIVED: [&[u16]; 2] = [&[CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT], &[CF_DIBV5, CF_DIB]];
 
-    fn derived(format: u32, kept: &[(u32, Vec<u8>)]) -> bool {
+    fn derived(format: u32, offered: &[u32]) -> bool {
         let Ok(format) = u16::try_from(format) else { return false };
         DERIVED.iter().any(|group| {
-            group.contains(&format)
-                && kept
-                    .iter()
-                    .any(|&(f, _)| u16::try_from(f).is_ok_and(|f| f != format && group.contains(&f)))
+            let Some(rank) = group.iter().position(|&f| f == format) else { return false };
+            group[..rank].iter().any(|&better| offered.contains(&u32::from(better)))
         })
     }
 
@@ -129,14 +128,19 @@ mod imp {
 
     pub fn capture() -> Option<Saved> {
         let _clip = open()?;
-        let mut saved = Vec::new();
+        // Listing the formats renders nothing; only asking for the data does.
+        let mut offered = Vec::new();
         let mut format = 0;
         loop {
             format = unsafe { EnumClipboardFormats(format) };
             if format == 0 {
                 break;
             }
-            if !copyable(format) || derived(format, &saved) {
+            offered.push(format);
+        }
+        let mut saved = Vec::new();
+        for &format in &offered {
+            if !copyable(format) || derived(format, &offered) {
                 continue;
             }
             let handle = unsafe { GetClipboardData(format) };

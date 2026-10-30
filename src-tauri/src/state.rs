@@ -95,5 +95,13 @@ fn apply(app: &AppHandle, settings: Settings) -> Result<Vec<HotkeyError>, String
 }
 
 pub fn set_paused(app: &AppHandle, paused: bool) {
-    let _ = update_settings(app, |settings| settings.paused = paused);
+    // The menu item has already ticked itself; if the change didn't hold, it
+    // must show what does.
+    if update_settings(app, |settings| settings.paused = paused).is_err() {
+        let state = app.state::<AppState>();
+        let item = state.pause_item.lock().unwrap().clone();
+        if let Some(item) = item {
+            let _ = item.set_checked(state.settings().paused);
+        }
+    }
 }
