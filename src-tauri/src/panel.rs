@@ -17,9 +17,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, Sender},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -71,6 +71,16 @@ struct Job {
 
 static JOB: Mutex<Option<Job>> = Mutex::new(None);
 static SEQ: AtomicU64 = AtomicU64::new(0);
+/// The request the page is waiting for; set to drop it.
+static RUNNING: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Drops the request in flight, so a closed panel or "Again" doesn't leave a
+/// paid request (or the local model) working for nobody.
+pub fn cancel_running() {
+    if let Some(cancel) = RUNNING.lock().unwrap().take() {
+        cancel.store(true, Ordering::SeqCst);
+    }
+}
 
 pub fn trigger(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -281,9 +291,21 @@ pub async fn run(app: AppHandle, ask: Ask) -> Result<String, String> {
             llm::transform(&prompt, &target, &secondary, &text)
         }
     };
-    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
-        .await
-        .map_err(|e| e.to_string())?
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = RUNNING.lock().unwrap().replace(cancel.clone()) {
+        previous.store(true, Ordering::SeqCst);
+    }
+    let flag = cancel.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        llm::transform_text(&app, &settings, &prompt, Some(&flag))
+    })
+    .await
+    .map_err(|e| e.to_string());
+    let mut running = RUNNING.lock().unwrap();
+    if running.as_ref().is_some_and(|current| Arc::ptr_eq(current, &cancel)) {
+        *running = None;
+    }
+    result?
 }
 
 /// The language picked in the panel becomes the target; the fallback for text
@@ -303,6 +325,7 @@ fn languages(picked: &str, target: &str, secondary: &str) -> (String, String) {
 
 /// Puts the answer in: back to the app first, then the hotkey's thread writes it.
 pub fn write(app: &AppHandle, text: String) {
+    cancel_running();
     let Some(job) = JOB.lock().unwrap().take() else { return };
     // While one of our windows is in front we may hand focus back; once it is
     // hidden, Windows would no longer let us.
@@ -316,6 +339,7 @@ pub fn write(app: &AppHandle, text: String) {
 /// Closes the panel. `restore` gives focus back to the app the text came from
 /// (Esc); after a click elsewhere the user is already where they want to be.
 pub fn close(app: &AppHandle, restore: bool) {
+    cancel_running();
     let Some(job) = JOB.lock().unwrap().take() else { return };
     if restore {
         input::restore_focus(job.target);

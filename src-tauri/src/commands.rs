@@ -83,10 +83,18 @@ pub async fn test_connection(app: AppHandle, text: String) -> Result<String, Str
     let settings = app.state::<AppState>().settings();
     let action = settings.actions.first().ok_or("Нет ни одного действия")?;
     let prompt = llm::action_prompt(&settings, action, &text);
+    // One request at a time: a check must not run beside a hotkey's action.
+    if app.state::<AppState>().busy.swap(true, Ordering::SeqCst) {
+        return Err("Сейчас идёт другое действие, попробуй чуть позже".into());
+    }
     // Reads the keychain and may start the local model: off the async workers.
-    tauri::async_runtime::spawn_blocking(move || llm::transform_text(&app, &settings, &prompt))
-        .await
-        .map_err(|e| e.to_string())?
+    let handle = app.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || llm::transform_text(&handle, &settings, &prompt, None))
+            .await
+            .map_err(|e| e.to_string());
+    app.state::<AppState>().busy.store(false, Ordering::SeqCst);
+    result?
 }
 
 /// Turns global hotkeys off while the settings window records a new combination.
@@ -137,6 +145,12 @@ pub fn panel_fit(app: AppHandle, seq: u64, height: f64) {
 #[tauri::command]
 pub async fn panel_run(app: AppHandle, ask: panel::Ask) -> Result<String, String> {
     panel::run(app, ask).await
+}
+
+/// The page dropped the answer it was waiting for ("Back").
+#[tauri::command]
+pub fn panel_cancel() {
+    panel::cancel_running();
 }
 
 #[tauri::command]

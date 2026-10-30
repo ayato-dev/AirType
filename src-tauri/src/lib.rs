@@ -15,6 +15,7 @@ mod state;
 mod tray;
 
 use state::AppState;
+use std::sync::atomic::Ordering;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -72,6 +73,13 @@ pub fn run() {
             WindowEvent::Focused(focused) if window.label() == "panel" => {
                 panel::focus_changed(window.app_handle(), *focused);
             }
+            // Settings closed while recording a hotkey: the page can't turn them back on.
+            WindowEvent::Destroyed if window.label() == "main" => {
+                let app = window.app_handle();
+                if app.state::<AppState>().suspended.swap(false, Ordering::SeqCst) {
+                    hotkeys::apply(app);
+                }
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +95,7 @@ pub fn run() {
             commands::panel_view,
             commands::panel_fit,
             commands::panel_run,
+            commands::panel_cancel,
             commands::panel_write,
             commands::panel_copy,
             commands::panel_close,
