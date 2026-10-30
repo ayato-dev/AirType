@@ -406,6 +406,8 @@ async function ask(next: Ask) {
 
 function back() {
   run++;
+  // Nobody waits for that answer any more, so it shouldn't keep running (or cost money).
+  if (phase === "working") void invoke("panel_cancel");
   phase = "ask";
   render();
 }

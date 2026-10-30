@@ -218,8 +218,15 @@ pub async fn local_delete(app: AppHandle, model: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Closes settings for good; the tray builds them again when needed.
+/// Closes settings for good; the tray builds them again when needed. The page
+/// has saved by now, so this skips its close-requested handler.
 #[tauri::command]
 pub fn hide_settings(window: WebviewWindow) {
-    let _ = window.close();
+    let _ = window.destroy();
+}
+
+/// Cheap enough to poll while the user is in System Settings: no keychain.
+#[tauri::command]
+pub fn accessibility_status() -> bool {
+    input::accessibility_granted(false)
 }

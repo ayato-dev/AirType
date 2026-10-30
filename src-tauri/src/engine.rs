@@ -57,7 +57,7 @@ fn run(app: &AppHandle, action_id: &str) -> Result<Ran, String> {
     let action = settings.actions.iter().find(|a| a.id == action_id).cloned().ok_or("Действие не найдено")?;
     preflight(app, &settings)?;
 
-    let cx = context();
+    let cx = context()?;
     hud::set_anchor(cx.anchor);
     let source = read(Scope::Field, cx.terminal)?.ok_or(NOTHING_FOUND)?;
     if settings.show_hud {
@@ -108,9 +108,11 @@ pub struct Context {
     pub anchor: Option<Rect>,
 }
 
-pub fn context() -> Context {
-    input::wait_modifiers_released(Duration::from_millis(1500));
-    Context { target: input::foreground(), terminal: input::terminal_focused(), anchor: field::anchor() }
+pub fn context() -> Result<Context, String> {
+    if !input::wait_modifiers_released(Duration::from_millis(2000)) {
+        return Err("Отпусти клавиши сочетания, и всё сработает".into());
+    }
+    Ok(Context { target: input::foreground(), terminal: input::terminal_focused(), anchor: field::anchor() })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -226,7 +228,9 @@ pub fn write(source: &Source, output: &str, target: Target) -> Result<Written, S
 fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
     let _ = clipboard.clear();
     input::press(Chord::Copy);
-    if let Some(text) = wait_for_text(clipboard, Duration::from_millis(400)) {
+    // Heavy apps (Electron, Office) can take a while to fill the clipboard; a copy
+    // that lands after the clipboard was put back would overwrite the user's.
+    if let Some(text) = wait_for_text(clipboard, COPY_WAIT) {
         return Some(text);
     }
     if !select_all {
@@ -235,8 +239,10 @@ fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
     input::press(Chord::SelectAll);
     thread::sleep(Duration::from_millis(60));
     input::press(Chord::Copy);
-    wait_for_text(clipboard, Duration::from_millis(400))
+    wait_for_text(clipboard, COPY_WAIT)
 }
+
+const COPY_WAIT: Duration = Duration::from_millis(700);
 
 fn wait_for_text(clipboard: &mut Clipboard, timeout: Duration) -> Option<String> {
     let start = Instant::now();

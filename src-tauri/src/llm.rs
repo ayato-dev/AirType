@@ -315,7 +315,7 @@ pub fn transform_text(
     })
 }
 
-fn check_size(settings: &Settings, size: usize) -> Result<(), String> {
+pub fn check_size(settings: &Settings, size: usize) -> Result<(), String> {
     let limit = if settings.provider == Provider::Local { LOCAL_MAX_CHARS } else { MAX_CHARS };
     if size > limit {
         return Err(format!("Текст слишком длинный ({size} знаков, можно до {limit}). Выдели часть"));

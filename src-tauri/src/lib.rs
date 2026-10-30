@@ -90,6 +90,7 @@ pub fn run() {
             commands::suspend_hotkeys,
             commands::set_autostart,
             commands::request_accessibility,
+            commands::accessibility_status,
             commands::hide_settings,
             commands::hud_fit,
             commands::panel_view,

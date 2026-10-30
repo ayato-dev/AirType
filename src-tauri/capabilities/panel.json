@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "The panel under the text: its own view, requests and answer",
+  "windows": ["panel"],
+  "permissions": [
+    "core:event:default",
+    "allow-panel-view",
+    "allow-panel-fit",
+    "allow-panel-run",
+    "allow-panel-cancel",
+    "allow-panel-write",
+    "allow-panel-copy",
+    "allow-panel-close"
+  ]
+}

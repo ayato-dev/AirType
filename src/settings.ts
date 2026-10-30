@@ -249,6 +249,7 @@ function scheduleSave(delay = 350) {
 
 async function save() {
   window.clearTimeout(saveTimer);
+  saveTimer = undefined;
   try {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("save_settings", { settings });
     // The new file is written, so the remark about the old one is done.
@@ -838,16 +839,31 @@ function startRecording(owner: { hotkey: string }, chip: HTMLButtonElement) {
   void invoke("suspend_hotkeys", { suspended: true });
 }
 
-function stopRecording() {
-  if (!recording) return;
+function stopRecording(): Promise<void> {
+  if (!recording) return Promise.resolve();
   const { owner, chip } = recording;
   recording = null;
   chip.classList.remove("recording");
   fillChip(chip, owner.hotkey);
-  void save().then(async () => {
+  return save().then(async () => {
     ui.hotkeyErrors = await invoke<HotkeyError[]>("suspend_hotkeys", { suspended: false });
     refreshActionMeta();
   });
+}
+
+let closing = false;
+
+/** Closes settings with the last edits saved and the hotkeys back on. */
+async function closeSettings() {
+  if (closing) return;
+  closing = true;
+  try {
+    await stopRecording();
+    // A field edited a moment ago is still waiting for its debounce.
+    if (saveTimer !== undefined) await save();
+  } finally {
+    await invoke("hide_settings");
+  }
 }
 
 window.addEventListener(
@@ -860,7 +876,7 @@ window.addEventListener(
       const isField = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (hideCombo || (e.key === "Escape" && !isField)) {
         e.preventDefault();
-        void invoke("hide_settings");
+        void closeSettings();
       }
       return;
     }
@@ -891,7 +907,7 @@ window.addEventListener(
   true,
 );
 
-window.addEventListener("blur", () => stopRecording());
+window.addEventListener("blur", () => void stopRecording());
 
 // ---------- wiring ----------
 
@@ -902,7 +918,7 @@ function setPaused(paused: boolean) {
 }
 
 function bind() {
-  $("close").addEventListener("click", () => void invoke("hide_settings"));
+  $("close").addEventListener("click", () => void closeSettings());
   $("minimize").addEventListener("click", () => void getCurrentWindow().minimize());
   el.views.addEventListener("scroll", updateFade, { passive: true });
   const resized = new ResizeObserver(updateFade);
@@ -1095,8 +1111,15 @@ async function init() {
   await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     if (focused) void refreshExternal();
   });
-  window.setInterval(() => {
-    if (ui.platform === "macos" && !ui.accessibility) void refreshExternal();
+  // Alt+F4 and the like: save first, then close from our side.
+  await getCurrentWindow().onCloseRequested((event) => {
+    event.preventDefault();
+    void closeSettings();
+  });
+  // Waiting for the permission: ask only for it, not for the keychain behind get_state.
+  window.setInterval(async () => {
+    if (ui.platform !== "macos" || ui.accessibility) return;
+    if (await invoke<boolean>("accessibility_status")) void refreshExternal();
   }, 2000);
 }
 

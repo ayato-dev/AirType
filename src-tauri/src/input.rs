@@ -38,11 +38,17 @@ pub fn return_to(target: Target) -> bool {
 
 /// The hotkey's own modifiers are still held when it fires; pressing Ctrl+C on top
 /// of them would send e.g. Ctrl+Alt+C, so wait until the user lets go.
-pub fn wait_modifiers_released(timeout: Duration) {
+/// False when they are still held after `timeout`: Ctrl+C sent now would reach
+/// the app as Ctrl+Alt+C or the like.
+pub fn wait_modifiers_released(timeout: Duration) -> bool {
     let start = Instant::now();
-    while imp::modifiers_down() && start.elapsed() < timeout {
+    while imp::modifiers_down() {
+        if start.elapsed() >= timeout {
+            return false;
+        }
         thread::sleep(Duration::from_millis(10));
     }
+    true
 }
 
 pub fn press(chord: Chord) {

@@ -57,8 +57,8 @@ mod imp {
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
     };
     use windows_sys::Win32::System::Ole::{
-        CF_BITMAP, CF_DSPBITMAP, CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_ENHMETAFILE, CF_METAFILEPICT,
-        CF_OWNERDISPLAY, CF_PALETTE, CF_UNICODETEXT,
+        CF_BITMAP, CF_DIB, CF_DIBV5, CF_DSPBITMAP, CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_ENHMETAFILE,
+        CF_METAFILEPICT, CF_OEMTEXT, CF_OWNERDISPLAY, CF_PALETTE, CF_TEXT, CF_UNICODETEXT,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, MsgWaitForMultipleObjects,
@@ -87,15 +87,36 @@ mod imp {
             && !(0x200..=0x3FF).contains(&format)
     }
 
+    /// Formats Windows makes from one another. Asking for a made one forces the
+    /// conversion (a large picture twice over), and Windows makes it again from
+    /// the one we keep. The app's own format comes first in the enumeration.
+    const DERIVED: [&[u16]; 2] = [&[CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT], &[CF_DIBV5, CF_DIB]];
+
+    fn derived(format: u32, kept: &[(u32, Vec<u8>)]) -> bool {
+        let Ok(format) = u16::try_from(format) else { return false };
+        DERIVED.iter().any(|group| {
+            group.contains(&format)
+                && kept
+                    .iter()
+                    .any(|&(f, _)| u16::try_from(f).is_ok_and(|f| f != format && group.contains(&f)))
+        })
+    }
+
     /// Opens the clipboard, retrying while another app has it open.
     fn open() -> Option<Clip> {
-        for _ in 0..40 {
+        open_until(Instant::now() + Duration::from_millis(600), || thread::sleep(Duration::from_millis(15)))
+    }
+
+    fn open_until(deadline: Instant, mut wait: impl FnMut()) -> Option<Clip> {
+        loop {
             if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
                 return Some(Clip);
             }
-            thread::sleep(Duration::from_millis(15));
+            if Instant::now() >= deadline {
+                return None;
+            }
+            wait();
         }
-        None
     }
 
     struct Clip;
@@ -115,7 +136,7 @@ mod imp {
             if format == 0 {
                 break;
             }
-            if !copyable(format) {
+            if !copyable(format) || derived(format, &saved) {
                 continue;
             }
             let handle = unsafe { GetClipboardData(format) };
@@ -137,9 +158,14 @@ mod imp {
     }
 
     pub fn restore(saved: Saved) {
-        let Some(_clip) = open() else { return };
+        if let Some(clip) = open() {
+            fill(clip, &saved);
+        }
+    }
+
+    fn fill(_clip: Clip, saved: &Saved) {
         unsafe { EmptyClipboard() };
-        for (format, bytes) in &saved {
+        for (format, bytes) in saved {
             put(*format, bytes);
         }
         // The user already has this content in Win+V history; don't add it twice.
@@ -283,7 +309,15 @@ mod imp {
                 Ok(Pasted::Missed)
             }
         };
-        restore(saved);
+        // The app that pasted may still hold the clipboard. Wait longer than a plain
+        // restore, and keep answering the clipboard meanwhile: if the user's
+        // content doesn't go back before the window goes, the answer stays there.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        if let Some(clip) = open_until(deadline, || {
+            pump(Instant::now() + Duration::from_millis(15), || false);
+        }) {
+            fill(clip, &saved);
+        }
         unsafe { DestroyWindow(hwnd) };
         PROMISED.with(|promised| promised.borrow_mut().clear());
         result

@@ -100,12 +100,15 @@ pub fn trigger(app: &AppHandle) {
 fn session(app: &AppHandle) -> Result<(), String> {
     let settings = app.state::<AppState>().settings();
     engine::preflight(app, &settings)?;
-    let cx = engine::context();
+    let cx = engine::context()?;
     hud::set_anchor(cx.anchor);
     let (mode, source) = match engine::read(Scope::Selection, cx.terminal)? {
         Some(source) => ("selection", source),
         None => ("compose", Source::caret()),
     };
+    // Refused now rather than after the user picks an action, and before a
+    // megabyte of text lands in the page.
+    llm::check_size(&settings, source.text.chars().count())?;
     let (sender, replies) = mpsc::channel();
     let writable = source.editable != Some(false);
     let seq = open(
@@ -246,7 +249,11 @@ pub fn fit(app: &AppHandle, seq: u64, height: f64) {
     if !window.is_visible().unwrap_or(false) {
         let _ = window.show();
     }
-    let _ = window.set_focus();
+    // The page refits on every line typed; taking focus each time would pull the
+    // app forward again and again.
+    if !window.is_focused().unwrap_or(false) {
+        let _ = window.set_focus();
+    }
 }
 
 /// The page's request to the model: an action on the selection, an instruction
