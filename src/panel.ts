@@ -378,7 +378,7 @@ async function fit() {
   if (!view) return;
   const seq = view.seq;
   await document.fonts.ready;
-  await new Promise(requestAnimationFrame);
+  // No waiting for a frame here: macOS gives a hidden window none, and this is what shows it.
   if (view?.seq !== seq) return;
   const height = Math.ceil(panel.getBoundingClientRect().height) + margin * 2;
   await invoke("panel_fit", { seq, height });
