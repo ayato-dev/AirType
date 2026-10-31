@@ -1,6 +1,6 @@
 [package]
 name = "airtype"
-version = "0.3.0"
+version = "0.3.1"
 description = "Lightweight AI translator and editor for any text field"
 license = "MIT"
 edition = "2021"
