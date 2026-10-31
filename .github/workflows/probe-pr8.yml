@@ -1,0 +1,61 @@
+name: probe-pr8
+
+on:
+  push:
+    branches: [probe/pr8-smoke]
+
+permissions:
+  contents: read
+
+jobs:
+  # Named like the job in build.yml so rust-cache restores the release dependencies
+  # that main already built. Nothing is saved back: save-if is false.
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            args: --target aarch64-apple-darwin --bundles app
+            exe: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Airtype.app
+          - os: macos-26
+            args: --target aarch64-apple-darwin --bundles app
+            exe: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Airtype.app
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          save-if: false
+      - run: npm ci
+      - name: Build without signing
+        shell: bash
+        run: npx tauri build ${{ matrix.args }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Drive the app on Windows
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        shell: powershell
+        run: |
+          ./.github/probe/drive-windows.ps1 -Exe "$env:GITHUB_WORKSPACE\${{ matrix.exe }}" -Out "$env:GITHUB_WORKSPACE\probe-out" -ProbeDir "$env:GITHUB_WORKSPACE\.github\probe"
+      - name: Drive the app on macOS
+        if: runner.os == 'macOS'
+        timeout-minutes: 25
+        env:
+          STRESS: main
+        run: bash .github/probe/drive-macos.sh "$GITHUB_WORKSPACE/${{ matrix.exe }}" "$GITHUB_WORKSPACE/probe-out" "$GITHUB_WORKSPACE/.github/probe"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.os }}
+          path: probe-out/
+          if-no-files-found: warn
+          retention-days: 3
