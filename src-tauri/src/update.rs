@@ -93,6 +93,10 @@ pub fn watch(app: &AppHandle) {
 /// Looks for a newer version. `asked`: the user pressed the button, so a
 /// failure is worth showing.
 pub async fn check(app: &AppHandle, asked: bool) -> Result<Option<String>, String> {
+    // A .deb install would be told about a version it can't install this way.
+    if !supported() {
+        return Ok(None);
+    }
     if !begin(app, "checking") {
         return Ok(status().available);
     }
@@ -124,7 +128,7 @@ pub async fn check(app: &AppHandle, asked: bool) -> Result<Option<String>, Strin
 /// Downloads and installs the update, then starts the new version. On Windows
 /// the installer takes over and closes the app itself.
 pub fn install(app: &AppHandle) {
-    if !begin(app, "downloading") {
+    if !supported() || !begin(app, "downloading") {
         return;
     }
     let app = app.clone();

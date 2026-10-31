@@ -1,7 +1,7 @@
 //! User settings (a JSON file in the app config dir) and API keys (OS keychain).
 
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{fs, io::Write, path::Path};
 
 const KEYRING_SERVICE: &str = "dev.ayato.airtype";
 
@@ -90,6 +90,7 @@ impl Default for Action {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    #[serde(deserialize_with = "known_provider")]
     pub provider: Provider,
     pub anthropic: ProviderConfig,
     pub openai: ProviderConfig,
@@ -102,6 +103,13 @@ pub struct Settings {
     pub paused: bool,
     pub actions: Vec<Action>,
     pub panel: PanelConfig,
+}
+
+/// A provider only a newer version knows (after going back to this one) falls
+/// back to the default, instead of throwing out the file with the user's actions.
+fn known_provider<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Provider, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(Provider::deserialize(value).unwrap_or(Settings::default().provider))
 }
 
 impl Default for Settings {
@@ -208,9 +216,12 @@ pub fn save(path: &Path, settings: &Settings) -> Result<(), String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    // Write then rename so a crash never leaves a half-written file.
+    // Written out to the disk, then renamed over the old one, so a crash or a
+    // power cut never leaves a half-written file.
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, raw).map_err(|e| e.to_string())?;
+    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    file.write_all(raw.as_bytes()).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+    drop(file);
     fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -250,6 +261,18 @@ mod tests {
         let loaded = load(&temp_dir("missing").join("settings.json"));
         assert_eq!(loaded.settings, Settings::default());
         assert!(loaded.notice.is_none() && !loaded.read_only);
+    }
+
+    #[test]
+    fn provider_from_a_newer_version_keeps_the_rest() {
+        let dir = temp_dir("newer");
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"provider": "gemini", "targetLang": "Deutsch"}"#).unwrap();
+        let loaded = load(&path);
+        assert!(loaded.notice.is_none());
+        assert_eq!(loaded.settings.provider, Settings::default().provider);
+        assert_eq!(loaded.settings.target_lang, "Deutsch");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

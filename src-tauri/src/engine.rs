@@ -71,7 +71,7 @@ fn run(app: &AppHandle, action_id: &str) -> Result<Ran, String> {
         panel::show_answer(app, source.text, output, None, anchor, cx.target);
         return Ok(Ran::Shown);
     }
-    match write(&source, &output, cx.target)? {
+    match write(&source, &output, cx.target) {
         Written::Done => Ok(Ran::Written),
         Written::Missed(why) => {
             panel::show_answer(app, source.text, output, Some(why), anchor, cx.target);
@@ -113,7 +113,15 @@ pub fn context() -> Result<Context, String> {
     if !input::wait_modifiers_released(Duration::from_millis(2000)) {
         return Err("Отпусти клавиши сочетания, и всё сработает".into());
     }
-    Ok(Context { target: input::foreground(), terminal: input::terminal_focused(), anchor: field::anchor() })
+    let target = input::foreground();
+    // The answer panel or the settings: the text and its field are elsewhere.
+    if input::front(target) == Some(input::Front::Us) {
+        return Err("Это окно самого Airtype. Выдели текст в другой программе".into());
+    }
+    if input::elevated(target) {
+        return Err("Это окно открыто от имени администратора, и Windows не пускает в него Airtype".into());
+    }
+    Ok(Context { target, terminal: input::terminal_focused(), anchor: field::anchor() })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -176,7 +184,12 @@ pub fn read(scope: Scope, terminal: bool) -> Result<Option<Source>, String> {
         return if selection_only { Ok(None) } else { Err(SELECT_IN_TERMINAL.into()) };
     }
     let select_all = select_all && !terminal && !selection_only;
-    match copy(select_all)? {
+    let copied = match copy(select_all) {
+        // Where the copy keys can't go (xterm), the panel still opens to write something.
+        Err(e) if selection_only && e == NO_COPY => None,
+        copied => copied?,
+    };
+    match copied {
         // Whatever Ctrl+C took is still selected, so the answer replaces just that.
         Some(text) => Ok(Some(Source { text, snapshot: None, select_all: false, editable })),
         None if selection_only => Ok(None),
@@ -189,7 +202,7 @@ pub fn read(scope: Scope, terminal: bool) -> Result<Option<Source>, String> {
 fn copy(select_all: bool) -> Result<Option<String>, String> {
     let saved = Saved::capture().ok_or(clipboard::BUSY)?;
     let text = match Clipboard::new() {
-        Ok(mut clipboard) => Ok(grab_text(&mut clipboard, select_all)),
+        Ok(mut clipboard) => grab_text(&mut clipboard, select_all),
         Err(e) => Err(format!("Буфер обмена недоступен: {e}")),
     };
     saved.restore();
@@ -203,52 +216,81 @@ pub enum Written {
 }
 
 const WINDOW_CHANGED: &str = "Пока нейронка думала, открылось другое окно, поэтому ответ здесь";
+const KEYS_REFUSED: &str = "Окно не приняло нажатие вставки, поэтому ответ здесь";
+const KEYS_HELD: &str = "Клавиши сочетания так и остались зажаты, поэтому ответ здесь";
 const CHANGED: &str = "Текст поменялся, пока нейронка думала, поэтому ответ здесь";
 const NOWHERE: &str = "Тут не нашлось поля для ответа, поэтому он здесь";
+const CLIPBOARD_TAKEN: &str = "Буфер обмена занят другой программой, поэтому ответ здесь";
 
 /// Puts the answer where the text came from.
-pub fn write(source: &Source, output: &str, target: Target) -> Result<Written, String> {
+pub fn write(source: &Source, output: &str, target: Target) -> Written {
     if !input::return_to(target) {
-        return Ok(Written::Missed(WINDOW_CHANGED));
+        return Written::Missed(WINDOW_CHANGED);
     }
     if let Some(snapshot) = &source.snapshot {
         match snapshot.replace(output) {
-            Replaced::Done => return Ok(Written::Done),
-            Replaced::Changed => return Ok(Written::Missed(CHANGED)),
+            Replaced::Done => return Written::Done,
+            Replaced::Changed => return Written::Missed(CHANGED),
             Replaced::Unsupported => {}
         }
     }
+    // A modifier still held from the key that sent the answer (Ctrl+Enter in the
+    // panel) would make the paste another shortcut: Ctrl+Alt+V is Paste Special.
+    if !input::wait_modifiers_released(Duration::from_millis(1500)) {
+        return Written::Missed(KEYS_HELD);
+    }
+    // That wait is long enough to switch windows, and Ctrl+A would land in the new one.
+    if !input::is_foreground(target) {
+        return Written::Missed(WINDOW_CHANGED);
+    }
     if source.select_all {
-        input::press(Chord::SelectAll);
+        // Without it the answer would go in next to the text instead of over it.
+        if !input::press(Chord::SelectAll) {
+            return Written::Missed(KEYS_REFUSED);
+        }
         thread::sleep(Duration::from_millis(60));
     }
     if input::type_text(output) {
-        return Ok(Written::Done);
+        return Written::Done;
     }
-    match clipboard::paste(output, || input::press(Chord::Paste))? {
-        Pasted::Missed => Ok(Written::Missed(NOWHERE)),
-        Pasted::Taken | Pasted::Assumed => Ok(Written::Done),
+    match clipboard::paste(output, || input::press(Chord::Paste)) {
+        Ok(Pasted::Missed) => Written::Missed(NOWHERE),
+        Ok(Pasted::NotSent) => Written::Missed(KEYS_REFUSED),
+        Ok(Pasted::Taken | Pasted::Assumed) => Written::Done,
+        // The answer is ready and paid for; the panel can still hand it over.
+        Err(_) => Written::Missed(CLIPBOARD_TAKEN),
     }
 }
 
 /// Copies the selection; with nothing selected, takes the whole field when
 /// `select_all` says the focus is a field and not a page or a list.
-fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Option<String> {
-    let _ = clipboard.clear();
-    input::press(Chord::Copy);
+fn grab_text(clipboard: &mut Clipboard, select_all: bool) -> Result<Option<String>, String> {
+    // Left uncleared, the user's own clipboard would come back as the selection.
+    clipboard.clear().map_err(|_| clipboard::BUSY)?;
+    if !input::press(Chord::Copy) {
+        return Err(NO_COPY.into());
+    }
     // Heavy apps (Electron, Office) can take a while to fill the clipboard; a copy
     // that lands after the clipboard was put back would overwrite the user's.
     if let Some(text) = wait_for_text(clipboard, COPY_WAIT) {
-        return Some(text);
+        return Ok(Some(text));
     }
     if !select_all {
-        return None;
+        return Ok(None);
     }
-    input::press(Chord::SelectAll);
+    if !input::press(Chord::SelectAll) {
+        return Ok(None);
+    }
     thread::sleep(Duration::from_millis(60));
-    input::press(Chord::Copy);
-    wait_for_text(clipboard, COPY_WAIT)
+    if !input::press(Chord::Copy) {
+        return Err(NO_COPY.into());
+    }
+    Ok(wait_for_text(clipboard, COPY_WAIT))
 }
+
+/// The copy keys couldn't be sent: an old X terminal, where any of them would
+/// stop the running program, or a system that refused the input.
+const NO_COPY: &str = "Не смог нажать копирование в этом окне";
 
 const COPY_WAIT: Duration = Duration::from_millis(700);
 

@@ -124,7 +124,7 @@ fn session(app: &AppHandle) -> Result<(), String> {
     loop {
         match replies.recv_timeout(Duration::from_secs(1)) {
             Ok(Reply::Write(text)) => {
-                return match engine::write(&source, &text, cx.target)? {
+                return match engine::write(&source, &text, cx.target) {
                     Written::Done => Ok(()),
                     Written::Missed(why) => {
                         answer_at(app, source.text, text, Some(why), spot, cx.target);
@@ -138,7 +138,7 @@ fn session(app: &AppHandle) -> Result<(), String> {
                 // A page that never came up must not hold the hotkeys forever.
                 let stuck = JOB.lock().unwrap().as_ref().is_some_and(|job| job.view.seq == seq && !job.shown);
                 if stuck && opened.elapsed() > Duration::from_secs(8) {
-                    close(app, false);
+                    close(app, seq, false);
                     return Err("Панель не открылась, попробуй ещё раз".into());
                 }
             }
@@ -300,7 +300,7 @@ fn watch(app: &AppHandle, seq: u64, target: Target) {
             let clicked_outside = down && !pressed && !pointer_inside(&app);
             pressed = down;
             if away || clicked_outside {
-                close_shown(&app, seq);
+                close(&app, seq, false);
                 return;
             }
         }
@@ -415,9 +415,10 @@ fn languages(picked: &str, target: &str, secondary: &str) -> (String, String) {
 }
 
 /// Puts the answer in: back to the app first, then the hotkey's thread writes it.
-pub fn write(app: &AppHandle, text: String) {
+/// `seq` is the panel the page shows; a newer one is left alone.
+pub fn write(app: &AppHandle, seq: u64, text: String) {
+    let Some(job) = take(seq) else { return };
     cancel_running();
-    let Some(job) = JOB.lock().unwrap().take() else { return };
     // While one of our windows is in front we may hand focus back; once it is
     // hidden, Windows would no longer let us.
     input::restore_focus(job.target);
@@ -427,11 +428,13 @@ pub fn write(app: &AppHandle, text: String) {
     }
 }
 
-/// Closes the panel. `restore` gives focus back to the app the text came from
-/// (Esc); after a click elsewhere the user is already where they want to be.
-pub fn close(app: &AppHandle, restore: bool) {
+/// Closes the panel if it still shows job `seq`: a late close (the page's timer
+/// after Copy, a lost focus) must not take a panel that opened since. `restore`
+/// gives focus back to the app the text came from (Esc); after a click
+/// elsewhere the user is already where they want to be.
+pub fn close(app: &AppHandle, seq: u64, restore: bool) {
+    let Some(job) = take(seq) else { return };
     cancel_running();
-    let Some(job) = JOB.lock().unwrap().take() else { return };
     if restore {
         input::restore_focus(job.target);
     }
@@ -439,18 +442,17 @@ pub fn close(app: &AppHandle, restore: bool) {
     // Dropping the job drops its sender, which tells the hotkey's thread.
 }
 
-/// Closes the panel if it still shows this job: the user is elsewhere already.
-fn close_shown(app: &AppHandle, seq: u64) {
-    let job = {
-        let mut job = JOB.lock().unwrap();
-        if !job.as_ref().is_some_and(|job| job.view.seq == seq) {
-            return;
-        }
-        job.take()
-    };
-    cancel_running();
-    hide(app);
-    drop(job);
+/// The window itself was closed (Alt+F4): whatever it shows goes.
+pub fn close_any(app: &AppHandle) {
+    let seq = JOB.lock().unwrap().as_ref().map(|job| job.view.seq);
+    if let Some(seq) = seq {
+        close(app, seq, true);
+    }
+}
+
+fn take(seq: u64) -> Option<Job> {
+    let mut job = JOB.lock().unwrap();
+    job.as_ref().is_some_and(|job| job.view.seq == seq).then(|| job.take()).flatten()
 }
 
 fn hide(app: &AppHandle) {
@@ -460,18 +462,19 @@ fn hide(app: &AppHandle) {
     }
 }
 
-/// The panel's window gained or lost focus.
+/// The panel's window gained or lost focus. Only focus it had while shown
+/// counts: a hidden window can get and lose it as it is made (Windows does).
 pub fn focus_changed(app: &AppHandle, focused: bool) {
     let blurred = {
         let mut job = JOB.lock().unwrap();
         let Some(job) = job.as_mut() else { return };
-        if focused {
+        if focused && job.shown {
             job.focused = true;
         }
-        !focused && job.focused
+        (!focused && job.focused).then_some(job.view.seq)
     };
-    if blurred {
-        close(app, false);
+    if let Some(seq) = blurred {
+        close(app, seq, false);
     }
 }
 

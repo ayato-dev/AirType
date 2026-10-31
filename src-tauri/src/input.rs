@@ -1,8 +1,8 @@
 //! Synthetic keyboard input for the app that has focus: copy, select all, paste,
 //! and typing an answer in.
 //!
-//! Shortcuts are sent by physical key code, not by character, so Ctrl/Cmd+C works
-//! with any keyboard layout (Russian included). Typed text goes as Unicode
+//! Shortcuts are sent as keys, not characters, so Ctrl/Cmd+C works with any
+//! keyboard layout (Russian included). Typed text goes as Unicode
 //! characters, which no layout can change either.
 
 use std::{
@@ -18,8 +18,8 @@ pub enum Chord {
 }
 
 pub use imp::{
-    accessibility_granted, foreground, front, mouse_down, restore_focus, terminal_focused, wayland, Target,
-    SUPPORTED,
+    accessibility_granted, elevated, foreground, front, is_foreground, mouse_down, restore_focus,
+    terminal_focused, wayland, Target, SUPPORTED,
 };
 
 /// What is in front, next to the window the text came from.
@@ -63,8 +63,10 @@ pub fn wait_modifiers_released(timeout: Duration) -> bool {
     true
 }
 
-pub fn press(chord: Chord) {
-    imp::send(chord);
+/// Presses the shortcut in the app that has focus. False when the keys couldn't
+/// be sent: then nothing was copied or pasted.
+pub fn press(chord: Chord) -> bool {
+    imp::send(chord)
 }
 
 /// Types the text into the focused field as keystrokes, so the clipboard is never
@@ -200,13 +202,18 @@ mod imp {
     use super::{Chord, Front};
     use std::mem::size_of;
     use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LWIN, VK_MBUTTON, VK_MENU, VK_RBUTTON,
-        VK_RWIN, VK_SHIFT,
+        GetAsyncKeyState, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_LWIN,
+        VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RWIN, VK_SHIFT,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
@@ -253,12 +260,14 @@ mod imp {
     }
 
     fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+        // The scan code too: Remote Desktop, virtual machines and Citrix pass keys on by it.
+        let scan = unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) } as u16;
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: vk,
-                    wScan: 0,
+                    wScan: scan,
                     dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
                     time: 0,
                     dwExtraInfo: 0,
@@ -267,16 +276,15 @@ mod imp {
         }
     }
 
-    pub fn send(chord: Chord) {
+    pub fn send(chord: Chord) -> bool {
         let vk = match chord {
             Chord::Copy => VK_C,
             Chord::Paste => VK_V,
             Chord::SelectAll => VK_A,
         };
         let inputs = [key(VK_CONTROL, false), key(vk, false), key(vk, true), key(VK_CONTROL, true)];
-        unsafe {
-            SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
-        }
+        let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
+        sent as usize == inputs.len()
     }
 
     /// One UTF-16 unit as a key press; an emoji goes as its two surrogates.
@@ -298,13 +306,60 @@ mod imp {
     pub fn type_text(text: &str) -> bool {
         let inputs: Vec<INPUT> =
             text.encode_utf16().flat_map(|unit| [unicode(unit, false), unicode(unit, true)]).collect();
-        // A window of an elevated app refuses input from us; then nothing goes in at all.
+        // Short only when input is blocked outright (a secure desktop). A window of an
+        // elevated app drops it with no sign at all: `elevated` checks for that first.
         let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
         sent as usize == inputs.len()
     }
 
     pub fn foreground() -> Target {
         unsafe { GetForegroundWindow() as usize }
+    }
+
+    /// The window belongs to an app running as administrator while we don't.
+    /// Windows drops our keys to it without a word (UIPI), and nothing that
+    /// sends them can tell. False when its level can't be read.
+    pub fn elevated(target: Target) -> bool {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(target as _, &mut pid) };
+        if pid == 0 || pid == std::process::id() {
+            return false;
+        }
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        let theirs = integrity(process);
+        unsafe { CloseHandle(process) };
+        // The pseudo handle of our own process needs no closing.
+        let ours = integrity(unsafe { GetCurrentProcess() });
+        matches!((theirs, ours), (Some(theirs), Some(ours)) if theirs > ours)
+    }
+
+    /// The mandatory integrity level of the process: medium for apps, high for
+    /// apps run as administrator.
+    fn integrity(process: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
+        let mut token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return None;
+        }
+        let mut size = 0;
+        unsafe { GetTokenInformation(token, TokenIntegrityLevel, std::ptr::null_mut(), 0, &mut size) };
+        // u64s keep the pointer inside the label aligned.
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        let read = unsafe {
+            GetTokenInformation(token, TokenIntegrityLevel, buf.as_mut_ptr().cast(), size, &mut size)
+        };
+        unsafe { CloseHandle(token) };
+        if read == 0 {
+            return None;
+        }
+        // The level is the last sub-authority of the label's SID.
+        unsafe {
+            let sid = (*buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid;
+            let count = *GetSidSubAuthorityCount(sid);
+            (count > 0).then(|| *GetSidSubAuthority(sid, u32::from(count) - 1))
+        }
     }
 
     pub fn is_foreground(target: Target) -> bool {
@@ -368,6 +423,7 @@ mod imp {
     use core_foundation::string::CFString;
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use objc2::rc::autoreleasepool;
     use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 
     pub const SUPPORTED: bool = true;
@@ -414,7 +470,7 @@ mod imp {
         })
     }
 
-    pub fn send(chord: Chord) {
+    pub fn send(chord: Chord) -> bool {
         let code = match chord {
             Chord::Copy => KEY_C,
             Chord::Paste => KEY_V,
@@ -424,14 +480,20 @@ mod imp {
         // system's modifier state once the key is up, and the next hotkey waits for
         // a release that never comes.
         let Ok(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState) else {
-            return;
+            return false;
         };
-        for down in [true, false] {
-            if let Ok(event) = CGEvent::new_keyboard_event(source.clone(), code, down) {
-                event.set_flags(CGEventFlags::CGEventFlagCommand);
-                event.post(CGEventTapLocation::Session);
-            }
+        // Both made before either goes: a key down without its key up would stay held.
+        let (Ok(press), Ok(release)) = (
+            CGEvent::new_keyboard_event(source.clone(), code, true),
+            CGEvent::new_keyboard_event(source, code, false),
+        ) else {
+            return false;
+        };
+        for event in [press, release] {
+            event.set_flags(CGEventFlags::CGEventFlagCommand);
+            event.post(CGEventTapLocation::Session);
         }
+        true
     }
 
     /// Key events that carry their text: the app inserts the characters as typed,
@@ -462,8 +524,17 @@ mod imp {
         true
     }
 
+    // AppKit is asked from our own threads, the panel's watch 40 times a second:
+    // without a pool there, what it autoreleases is never let go.
     pub fn foreground() -> Target {
-        NSWorkspace::sharedWorkspace().frontmostApplication().map_or(0, |app| app.processIdentifier())
+        autoreleasepool(|_| {
+            NSWorkspace::sharedWorkspace().frontmostApplication().map_or(0, |app| app.processIdentifier())
+        })
+    }
+
+    /// macOS has no level of rights that keeps our keys out of an app.
+    pub fn elevated(_target: Target) -> bool {
+        false
     }
 
     pub fn is_foreground(target: Target) -> bool {
@@ -476,16 +547,20 @@ mod imp {
         if is_foreground(target) {
             return;
         }
-        if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(target) {
-            app.activateWithOptions(NSApplicationActivationOptions::empty());
-        }
+        autoreleasepool(|_| {
+            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(target) {
+                app.activateWithOptions(NSApplicationActivationOptions::empty());
+            }
+        });
     }
 
     pub fn terminal_focused() -> bool {
-        NSWorkspace::sharedWorkspace()
-            .frontmostApplication()
-            .and_then(|app| app.bundleIdentifier())
-            .is_some_and(|id| super::is_terminal_bundle(&id.to_string()))
+        autoreleasepool(|_| {
+            NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .and_then(|app| app.bundleIdentifier())
+                .is_some_and(|id| super::is_terminal_bundle(&id.to_string()))
+        })
     }
 
     /// Sending keystrokes needs the Accessibility permission. With `prompt`,
@@ -590,10 +665,10 @@ mod imp {
         let mut front = None;
         with_display(|d| {
             let Some(window) = active_window(d) else { return };
-            front = Some(if window == target {
-                Front::Target
-            } else if window_pid(d, window) == Some(std::process::id()) {
+            front = Some(if window_pid(d, window) == Some(std::process::id()) {
                 Front::Us
+            } else if window == target {
+                Front::Target
             } else {
                 Front::Other
             });
@@ -608,12 +683,13 @@ mod imp {
         pid
     }
 
-    pub fn send(chord: Chord) {
+    pub fn send(chord: Chord) -> bool {
         let keysym = match chord {
             Chord::Copy => XK_C,
             Chord::Paste => XK_V,
             Chord::SelectAll => XK_A,
         };
+        let mut sent = false;
         with_display(|d| {
             let shift = match focused_terminal(d) {
                 None => false,
@@ -637,14 +713,20 @@ mod imp {
                 let _ = d.conn.xtest_fake_input(kind, code, x11rb::CURRENT_TIME, d.root, 0, 0, 0);
             }
             // A round trip makes sure the server has taken the keys before we go on.
-            let _ = d.conn.get_input_focus().map(|cookie| cookie.reply());
+            sent = d.conn.get_input_focus().is_ok_and(|cookie| cookie.reply().is_ok());
         });
+        sent
     }
 
     pub fn foreground() -> Target {
         let mut window = 0;
         with_display(|d| window = active_window(d).unwrap_or(0));
         window
+    }
+
+    /// X11 has no level of rights that keeps our keys out of an app.
+    pub fn elevated(_target: Target) -> bool {
+        false
     }
 
     pub fn is_foreground(target: Target) -> bool {
@@ -730,9 +812,14 @@ mod imp {
     pub fn front(_target: Target) -> Option<Front> {
         None
     }
-    pub fn send(_chord: Chord) {}
+    pub fn send(_chord: Chord) -> bool {
+        false
+    }
     pub fn foreground() -> Target {
         0
+    }
+    pub fn elevated(_target: Target) -> bool {
+        false
     }
     pub fn restore_focus(_target: Target) {}
     pub fn accessibility_granted(_prompt: bool) -> bool {
