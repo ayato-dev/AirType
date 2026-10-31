@@ -42,28 +42,64 @@ fn check_transport(settings: &Settings, api_key: Option<&str>) -> Result<(), Str
         return Ok(());
     }
     let url = reqwest::Url::parse(base).map_err(|_| "Не понял адрес API в настройках".to_string())?;
-    let local = match url.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    };
     match url.scheme() {
         "https" => Ok(()),
-        "http" if local => Ok(()),
+        "http" if on_this_computer(&url) => Ok(()),
         _ => Err("Ключ API по http не отправляю: нужен https, http можно только для localhost".into()),
     }
 }
 
-pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        // A redirect would carry `x-api-key` to wherever it points, plain http
-        // included; the APIs answer where they are asked.
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(90))
-        .build()
-        .expect("http client")
+fn on_this_computer(url: &reqwest::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+/// The connections to the models. Answers are streamed, so a long one is not
+/// cut off by a deadline for the whole answer: the server sends text or pings
+/// all along, and a server that falls silent is caught by the read timeout.
+pub struct Http {
+    /// The APIs out there, through the system proxy when there is one.
+    remote: reqwest::Client,
+    /// This computer: the local model, Ollama, LM Studio. The system proxy
+    /// settings don't exempt 127.0.0.1, and a proxy elsewhere can't reach it.
+    direct: reqwest::Client,
+}
+
+impl Http {
+    pub fn new() -> Self {
+        let builder = || {
+            reqwest::Client::builder()
+                // A redirect would carry `x-api-key` to wherever it points, plain http
+                // included; the APIs answer where they are asked.
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+        };
+        Self {
+            remote: builder()
+                .read_timeout(Duration::from_secs(90))
+                .timeout(Duration::from_secs(10 * 60))
+                .build()
+                .expect("http client"),
+            // A slow processor reads a long text for minutes before the first word.
+            direct: builder()
+                .no_proxy()
+                .read_timeout(Duration::from_secs(300))
+                .timeout(Duration::from_secs(30 * 60))
+                .build()
+                .expect("http client"),
+        }
+    }
+
+    fn to(&self, base: &str) -> &reqwest::Client {
+        match reqwest::Url::parse(base) {
+            Ok(url) if on_this_computer(&url) => &self.direct,
+            _ => &self.remote,
+        }
+    }
 }
 
 /// What to ask the model to do with a text.
@@ -374,18 +410,18 @@ async fn cancelled(cancel: &AtomicBool) {
 /// A request without the local model, for the tests' mock servers.
 #[cfg(test)]
 pub async fn complete(
-    client: &reqwest::Client,
+    http: &Http,
     settings: &Settings,
     api_key: Option<&str>,
     system: &str,
     text: &str,
 ) -> Result<String, String> {
-    ask(client, settings, api_key, None, system, &wrap_text(text)).await
+    ask(http, settings, api_key, None, system, &wrap_text(text)).await
 }
 
 /// `local` is the address of the running local model, when that is the provider.
 async fn ask(
-    client: &reqwest::Client,
+    http: &Http,
     settings: &Settings,
     api_key: Option<&str>,
     local: Option<&str>,
@@ -394,11 +430,11 @@ async fn ask(
 ) -> Result<String, String> {
     check_transport(settings, api_key)?;
     let raw = match settings.provider {
-        Provider::Anthropic => anthropic(client, settings, api_key, system, user).await?,
-        Provider::Openai => openai(client, settings, api_key, system, user).await?,
+        Provider::Anthropic => anthropic(http, settings, api_key, system, user).await?,
+        Provider::Openai => openai(http, settings, api_key, system, user).await?,
         Provider::Local => {
             let base = local.ok_or("Модель на компьютере не запущена")?;
-            on_device(client, base, system, user).await?
+            on_device(http, base, system, user).await?
         }
     };
     let cleaned = clean(&raw);
@@ -409,7 +445,7 @@ async fn ask(
 }
 
 async fn anthropic(
-    client: &reqwest::Client,
+    http: &Http,
     settings: &Settings,
     api_key: Option<&str>,
     system: &str,
@@ -423,6 +459,7 @@ async fn anthropic(
     let mut body = json!({
         "model": cfg.model.trim(),
         "max_tokens": MAX_TOKENS,
+        "stream": true,
         "system": system,
         "messages": [{ "role": "user", "content": user }],
     });
@@ -430,7 +467,8 @@ async fn anthropic(
         body["output_config"] = json!({ "effort": settings.effort });
     }
 
-    let mut request = client
+    let mut request = http
+        .to(base)
         .post(format!("{base}/v1/messages"))
         .header("x-api-key", key)
         .header("anthropic-version", ANTHROPIC_VERSION);
@@ -440,27 +478,53 @@ async fn anthropic(
         request = request.header("anthropic-beta", FALLBACK_BETA);
     }
 
-    let response = send(request.json(&body)).await?;
-    match response["stop_reason"].as_str() {
-        Some("refusal") => return Err("Модель отказалась работать с этим текстом".into()),
-        Some("max_tokens") => return Err(TRUNCATED.into()),
-        _ => {}
+    let (text, stop) = match read(send(request.json(&body)).await?).await? {
+        Body::Whole(response) => {
+            let text = response["content"]
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|block| block["type"] == "text")
+                        .filter_map(|block| block["text"].as_str())
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            (text, response["stop_reason"].as_str().map(str::to_string))
+        }
+        Body::Stream(mut events) => {
+            let mut text = String::new();
+            let mut stop = None;
+            loop {
+                let event = events.next().await?.ok_or(CUT_OFF)?;
+                match event["type"].as_str() {
+                    // After a refusal mid-answer the fallback model goes on from the
+                    // text so far, on the same stream: all the text is the answer.
+                    Some("content_block_delta") if event["delta"]["type"] == "text_delta" => {
+                        text.push_str(event["delta"]["text"].as_str().unwrap_or_default());
+                    }
+                    Some("message_delta") => {
+                        if let Some(reason) = event["delta"]["stop_reason"].as_str() {
+                            stop = Some(reason.to_string());
+                        }
+                    }
+                    Some("message_stop") => break,
+                    Some("error") => return Err(stream_error(&event)),
+                    _ => {}
+                }
+            }
+            (text, stop)
+        }
+    };
+    match stop.as_deref() {
+        Some("refusal") => Err("Модель отказалась работать с этим текстом".into()),
+        Some("max_tokens") => Err(TRUNCATED.into()),
+        _ => Ok(text),
     }
-    let text = response["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|block| block["type"] == "text")
-                .filter_map(|block| block["text"].as_str())
-                .collect::<String>()
-        })
-        .unwrap_or_default();
-    Ok(text)
 }
 
 async fn openai(
-    client: &reqwest::Client,
+    http: &Http,
     settings: &Settings,
     api_key: Option<&str>,
     system: &str,
@@ -476,28 +540,25 @@ async fn openai(
     };
     let body = json!({
         "model": cfg.model.trim(),
+        "stream": true,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
     });
-    let mut request = client.post(format!("{base}/chat/completions"));
+    let mut request = http.to(base).post(format!("{base}/chat/completions"));
     if let Some(key) = api_key {
         request = request.bearer_auth(key);
     }
-    let response = send(request.json(&body)).await?;
-    let choice = &response["choices"][0];
-    if choice["finish_reason"] == "length" {
-        return Err(TRUNCATED.into());
-    }
-    Ok(choice["message"]["content"].as_str().unwrap_or_default().to_string())
+    chat(request.json(&body)).await
 }
 
 /// llama.cpp's server speaks the OpenAI chat API. Qwen3.5 thinks before it answers
 /// unless told not to, which only slows a translation down.
-async fn on_device(client: &reqwest::Client, base: &str, system: &str, user: &str) -> Result<String, String> {
+async fn on_device(http: &Http, base: &str, system: &str, user: &str) -> Result<String, String> {
     let body = json!({
         "model": "local",
+        "stream": true,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
@@ -511,42 +572,160 @@ async fn on_device(client: &reqwest::Client, base: &str, system: &str, user: &st
         "min_p": 0,
         "max_tokens": LOCAL_MAX_TOKENS,
     });
-    // A long text on a slow processor takes a while; the shared client gives up at 90 s.
-    let request =
-        client.post(format!("{base}/v1/chat/completions")).timeout(Duration::from_secs(300)).json(&body);
-    let response = send(request).await.map_err(|e| format!("Модель на компьютере: {e}"))?;
-    let choice = &response["choices"][0];
-    if choice["finish_reason"] == "length" {
-        return Err(TRUNCATED.into());
-    }
-    Ok(choice["message"]["content"].as_str().unwrap_or_default().to_string())
+    let request = http.to(base).post(format!("{base}/v1/chat/completions")).json(&body);
+    chat(request).await.map_err(|e| format!("Модель на компьютере: {e}"))
 }
 
-async fn send(request: reqwest::RequestBuilder) -> Result<Value, String> {
-    let response = request.send().await.map_err(|e| {
-        if e.is_timeout() {
-            "Нейронка не ответила вовремя".to_string()
-        } else if e.is_connect() {
-            "Не достучался до API. Нужен интернет, а из некоторых стран ещё VPN или прокси".to_string()
-        } else {
-            format!("Ошибка сети: {e}")
+/// The answer of an OpenAI-compatible chat endpoint, streamed or in one piece.
+async fn chat(request: reqwest::RequestBuilder) -> Result<String, String> {
+    let (text, finish) = match read(send(request).await?).await? {
+        Body::Whole(response) => {
+            let choice = &response["choices"][0];
+            let text = choice["message"]["content"].as_str().unwrap_or_default().to_string();
+            (text, choice["finish_reason"].as_str().map(str::to_string))
         }
-    })?;
-    let status = response.status();
-    let raw = response.text().await.map_err(|e| format!("Ошибка сети: {e}"))?;
-    let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
-    if status.is_success() {
-        return Ok(body);
+        Body::Stream(mut events) => {
+            let mut text = String::new();
+            let mut finish = None;
+            // Some servers end with a finish reason and no `[DONE]`.
+            while let Some(event) = events.next().await? {
+                if event.get("error").is_some() {
+                    return Err(stream_error(&event));
+                }
+                let choice = &event["choices"][0];
+                text.push_str(choice["delta"]["content"].as_str().unwrap_or_default());
+                if let Some(reason) = choice["finish_reason"].as_str() {
+                    finish = Some(reason.to_string());
+                }
+            }
+            if finish.is_none() && !events.done {
+                return Err(CUT_OFF.into());
+            }
+            (text, finish)
+        }
+    };
+    if finish.as_deref() == Some("length") {
+        return Err(TRUNCATED.into());
     }
+    Ok(text)
+}
+
+/// The connection dropped before the answer was finished; half of it would
+/// replace the whole field.
+const CUT_OFF: &str = "Ответ оборвался на полуслове, поле не тронул. Попробуй ещё раз";
+
+async fn send(request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    let response = request.send().await.map_err(network_error)?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let raw = response.text().await.map_err(network_error)?;
+    let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let detail = detail(&body, &raw);
     Err(match status.as_u16() {
         401 => "Ключ API не подходит".to_string(),
         403 => format!("Доступ запрещён: {detail}"),
         404 => format!("Нет такой модели или адреса: {detail}"),
-        429 => "Упёрся в лимит запросов, подожди немного".to_string(),
-        529 | 503 => "Нейронка перегружена, попробуй ещё раз".to_string(),
+        429 => RATE_LIMITED.to_string(),
+        529 | 503 => OVERLOADED.to_string(),
         code => format!("Ошибка API {code}: {detail}"),
     })
+}
+
+const RATE_LIMITED: &str = "Упёрся в лимит запросов, подожди немного";
+const OVERLOADED: &str = "Нейронка перегружена, попробуй ещё раз";
+
+fn network_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "Нейронка не ответила вовремя".to_string()
+    } else if e.is_connect() {
+        "Не достучался до API. Нужен интернет, а из некоторых стран ещё VPN или прокси".to_string()
+    } else {
+        format!("Ошибка сети: {e}")
+    }
+}
+
+/// An error that came in the middle of a stream, after the 200.
+fn stream_error(event: &Value) -> String {
+    match event["error"]["type"].as_str() {
+        Some("overloaded_error") => OVERLOADED.to_string(),
+        Some("rate_limit_error") => RATE_LIMITED.to_string(),
+        _ => format!("Ошибка API: {}", detail(event, "")),
+    }
+}
+
+enum Body {
+    /// A server that doesn't stream answered in one piece.
+    Whole(Value),
+    Stream(Events),
+}
+
+async fn read(response: reqwest::Response) -> Result<Body, String> {
+    let streamed = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+    if streamed {
+        return Ok(Body::Stream(Events { response, pending: Vec::new(), done: false }));
+    }
+    let raw = response.text().await.map_err(network_error)?;
+    Ok(Body::Whole(serde_json::from_str(&raw).unwrap_or(Value::Null)))
+}
+
+/// Server-sent events, as the JSON in their `data` lines.
+struct Events {
+    response: reqwest::Response,
+    /// Bytes of an event that hasn't fully arrived yet.
+    pending: Vec<u8>,
+    /// The OpenAI-style `[DONE]` came.
+    done: bool,
+}
+
+impl Events {
+    /// None when the stream is over.
+    async fn next(&mut self) -> Result<Option<Value>, String> {
+        loop {
+            if self.done {
+                return Ok(None);
+            }
+            if let Some(data) = take_event(&mut self.pending) {
+                if data.trim() == "[DONE]" {
+                    self.done = true;
+                    return Ok(None);
+                }
+                // Something other than JSON (a keep-alive) carries nothing.
+                if let Ok(event) = serde_json::from_str(&data) {
+                    return Ok(Some(event));
+                }
+                continue;
+            }
+            match self.response.chunk().await.map_err(network_error)? {
+                // Line ends may be \r\n; JSON never holds a bare \r.
+                Some(bytes) => self.pending.extend(bytes.iter().filter(|&&b| b != b'\r')),
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+/// Takes the first complete event off the front of `pending` and returns its
+/// data lines joined; an event without data (a comment, a ping) is skipped.
+fn take_event(pending: &mut Vec<u8>) -> Option<String> {
+    loop {
+        let end = pending.windows(2).position(|pair| pair == b"\n\n")?;
+        let block: Vec<u8> = pending.drain(..end + 2).collect();
+        let block = String::from_utf8_lossy(&block);
+        let data: Vec<&str> = block
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|data| data.strip_prefix(' ').unwrap_or(data))
+            .collect();
+        if !data.is_empty() {
+            return Some(data.join("\n"));
+        }
+    }
 }
 
 /// What the server said went wrong, short enough for the HUD.
@@ -621,13 +800,13 @@ mod tests {
             mock_server(r#"{"content":[{"type":"text","text":"Half"}],"stop_reason":"max_tokens"}"#);
         let mut settings = Settings::default();
         settings.anthropic.base_url = url;
-        let err = tauri::async_runtime::block_on(complete(&http_client(), &settings, Some("k"), "s", "t"));
+        let err = tauri::async_runtime::block_on(complete(&Http::new(), &settings, Some("k"), "s", "t"));
         assert_eq!(err.unwrap_err(), TRUNCATED);
 
         let (url, _server) =
             mock_server(r#"{"choices":[{"message":{"content":"Half"},"finish_reason":"length"}]}"#);
         let err =
-            tauri::async_runtime::block_on(complete(&http_client(), &openai_settings(&url), None, "s", "t"));
+            tauri::async_runtime::block_on(complete(&Http::new(), &openai_settings(&url), None, "s", "t"));
         assert_eq!(err.unwrap_err(), TRUNCATED);
     }
 
@@ -679,7 +858,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.anthropic.base_url = url;
         let out = tauri::async_runtime::block_on(complete(
-            &http_client(),
+            &Http::new(),
             &settings,
             Some("sk-test"),
             "sys",
@@ -712,8 +891,8 @@ mod tests {
             },
             ..Settings::default()
         };
-        let out = tauri::async_runtime::block_on(complete(&http_client(), &settings, None, "sys", "Hello"))
-            .unwrap();
+        let out =
+            tauri::async_runtime::block_on(complete(&Http::new(), &settings, None, "sys", "Hello")).unwrap();
         assert_eq!(out, "Bonjour");
 
         let request = server.join().unwrap();
@@ -726,7 +905,7 @@ mod tests {
         let (url, _server) = mock_server(r#"{"content":[],"stop_reason":"refusal"}"#);
         let mut settings = Settings::default();
         settings.anthropic.base_url = url;
-        let err = tauri::async_runtime::block_on(complete(&http_client(), &settings, Some("k"), "s", "t"))
+        let err = tauri::async_runtime::block_on(complete(&Http::new(), &settings, Some("k"), "s", "t"))
             .unwrap_err();
         assert!(err.contains("отказалась"));
     }
@@ -827,8 +1006,111 @@ mod tests {
         );
         let mut settings = Settings::default();
         settings.anthropic.base_url = url;
-        let err = tauri::async_runtime::block_on(complete(&http_client(), &settings, Some("k"), "s", "t"))
+        let err = tauri::async_runtime::block_on(complete(&Http::new(), &settings, Some("k"), "s", "t"))
             .unwrap_err();
         assert!(err.contains("307"), "{err}");
+    }
+
+    /// Serves server-sent events and closes the connection after them.
+    fn sse_server(events: &str) -> (String, std::thread::JoinHandle<String>) {
+        mock_server_raw(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{events}"
+        ))
+    }
+
+    fn anthropic_events(stop: &str, finished: bool) -> String {
+        let mut events = String::from(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"content\":[]}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hm\"}}\n\n\
+event: ping\ndata: {\"type\":\"ping\"}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello, \"}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"fallback\"}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":3,\"delta\":{\"type\":\"text_delta\",\"text\":\"мир!\"}}\n\n",
+        );
+        events.push_str(&format!(
+            "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{stop}\"}}}}\n\n"
+        ));
+        if finished {
+            events.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+        }
+        events
+    }
+
+    fn ask_anthropic(url: String) -> Result<String, String> {
+        let mut settings = Settings::default();
+        settings.anthropic.base_url = url;
+        tauri::async_runtime::block_on(complete(&Http::new(), &settings, Some("k"), "s", "t"))
+    }
+
+    #[test]
+    fn anthropic_streamed_answer() {
+        let (url, server) = sse_server(&anthropic_events("end_turn", true));
+        assert_eq!(ask_anthropic(url).unwrap(), "Hello, мир!");
+        let request = server.join().unwrap();
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["stream"], true);
+    }
+
+    #[test]
+    fn anthropic_stream_stops_are_errors() {
+        let (url, _server) = sse_server(&anthropic_events("refusal", true));
+        assert!(ask_anthropic(url).unwrap_err().contains("отказалась"));
+        let (url, _server) = sse_server(&anthropic_events("max_tokens", true));
+        assert_eq!(ask_anthropic(url).unwrap_err(), TRUNCATED);
+        // The connection dropped before `message_stop`: half an answer.
+        let (url, _server) = sse_server(&anthropic_events("end_turn", false));
+        assert_eq!(ask_anthropic(url).unwrap_err(), CUT_OFF);
+        let (url, _server) = sse_server(
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        );
+        assert_eq!(ask_anthropic(url).unwrap_err(), OVERLOADED);
+    }
+
+    #[test]
+    fn openai_streamed_answer() {
+        let chunk = |content: &str, finish: &str| {
+            format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{content}\"}},\"finish_reason\":{finish}}}]}}\r\n\r\n")
+        };
+        let ask = |events: String| {
+            let (url, _server) = sse_server(&events);
+            tauri::async_runtime::block_on(complete(&Http::new(), &openai_settings(&url), None, "s", "t"))
+        };
+        let done = "data: [DONE]\r\n\r\n";
+        let whole =
+            format!(": keep-alive\r\n\r\n{}{}{done}", chunk("Bon", "null"), chunk("jour", "\"stop\""));
+        assert_eq!(ask(whole).unwrap(), "Bonjour");
+        // A finish reason ends the answer even without `[DONE]`.
+        assert_eq!(ask(chunk("Hi", "\"stop\"")).unwrap(), "Hi");
+        assert_eq!(ask(format!("{}{done}", chunk("Half", "\"length\""))).unwrap_err(), TRUNCATED);
+        assert_eq!(ask(chunk("Half", "null")).unwrap_err(), CUT_OFF);
+        let error = "data: {\"error\":{\"message\":\"model crashed\"}}\n\n".to_string();
+        assert!(ask(error).unwrap_err().contains("model crashed"));
+    }
+
+    #[test]
+    fn events_come_whole_however_the_bytes_are_cut() {
+        let stream = "data: {\"a\":1}\n\n: comment\n\ndata: line one\ndata:line two\n\n";
+        let mut pending = Vec::new();
+        let mut events = Vec::new();
+        for byte in stream.bytes() {
+            pending.push(byte);
+            while let Some(event) = take_event(&mut pending) {
+                events.push(event);
+            }
+        }
+        assert_eq!(events, ["{\"a\":1}", "line one\nline two"]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn this_computer_goes_direct() {
+        let http = Http::new();
+        for local in ["http://127.0.0.1:8080", "http://localhost:11434/v1", "http://[::1]:1234"] {
+            assert!(std::ptr::eq(http.to(local), &http.direct), "{local}");
+        }
+        for remote in [ANTHROPIC_URL, OPENAI_URL, "http://192.168.1.5:11434/v1", "not a url"] {
+            assert!(std::ptr::eq(http.to(remote), &http.remote), "{remote}");
+        }
     }
 }
