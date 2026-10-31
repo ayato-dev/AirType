@@ -155,8 +155,8 @@ pub fn panel_cancel() {
 }
 
 #[tauri::command]
-pub fn panel_write(app: AppHandle, text: String) {
-    panel::write(&app, text);
+pub fn panel_write(app: AppHandle, seq: u64, text: String) {
+    panel::write(&app, seq, text);
 }
 
 /// Copying is the user's own choice here, so it goes to the clipboard like any copy.
@@ -166,8 +166,8 @@ pub fn panel_copy(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn panel_close(app: AppHandle, restore: bool) {
-    panel::close(&app, restore);
+pub fn panel_close(app: AppHandle, seq: u64, restore: bool) {
+    panel::close(&app, seq, restore);
 }
 
 #[derive(Serialize)]

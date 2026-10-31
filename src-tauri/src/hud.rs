@@ -86,6 +86,11 @@ pub fn fit(app: &AppHandle, width: f64, height: f64) {
     let anchor = *ANCHOR.lock().unwrap();
     popup::place(app, &hud, width, height, anchor, Fallback::BottomCenter);
     platform_show(&hud);
+    // A delayed hide that ran between the check above and the show: it wins.
+    if !WANTED.load(Ordering::SeqCst) {
+        platform_hide(&hud);
+        return;
+    }
     // Clicks go through to whatever is underneath. Set after showing: GTK can't
     // change input regions of a window that was never mapped.
     let _ = hud.set_ignore_cursor_events(true);
