@@ -124,7 +124,7 @@ fn session(app: &AppHandle) -> Result<(), String> {
     loop {
         match replies.recv_timeout(Duration::from_secs(1)) {
             Ok(Reply::Write(text)) => {
-                return match engine::write(&source, &text, cx.target)? {
+                return match engine::write(&source, &text, cx.target) {
                     Written::Done => Ok(()),
                     Written::Missed(why) => {
                         answer_at(app, source.text, text, Some(why), spot, cx.target);

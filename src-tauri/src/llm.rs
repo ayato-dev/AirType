@@ -29,6 +29,7 @@ const FALLBACK_MODELS: &[&str] =
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 /// A cut-off answer would replace the whole field with half of it.
 const TRUNCATED: &str = "Ответ не влез в лимит модели, поле не тронул. Возьми текст покороче";
+const REFUSED: &str = "Модель отказалась работать с этим текстом";
 
 /// The key never travels in the clear: plain http is only for this computer
 /// (a local Ollama or LM Studio).
@@ -385,6 +386,13 @@ pub fn answer(
     };
     let http = &app.state::<AppState>().http;
     let request = ask(http, settings, api_key.as_deref(), local.as_deref(), system, user);
+    // A long answer on this computer must not run into the server's idle timer.
+    let request = async {
+        tokio::select! {
+            result = request => result,
+            () = keep_local_awake(), if local.is_some() => unreachable!(),
+        }
+    };
     let result = tauri::async_runtime::block_on(async {
         match cancel {
             None => request.await,
@@ -404,6 +412,13 @@ pub fn answer(
 async fn cancelled(cancel: &AtomicBool) {
     while !cancel.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn keep_local_awake() {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        crate::local::touch();
     }
 }
 
@@ -496,7 +511,12 @@ async fn anthropic(
             let mut text = String::new();
             let mut stop = None;
             loop {
-                let event = events.next().await?.ok_or(CUT_OFF)?;
+                let event = match events.next().await? {
+                    Some(event) => event,
+                    // The stop reason comes after all the text; a proxy may drop what follows it.
+                    None if stop.is_some() => break,
+                    None => return Err(CUT_OFF.into()),
+                };
                 match event["type"].as_str() {
                     // After a refusal mid-answer the fallback model goes on from the
                     // text so far, on the same stream: all the text is the answer.
@@ -517,7 +537,7 @@ async fn anthropic(
         }
     };
     match stop.as_deref() {
-        Some("refusal") => Err("Модель отказалась работать с этим текстом".into()),
+        Some("refusal") => Err(REFUSED.into()),
         Some("max_tokens") => Err(TRUNCATED.into()),
         _ => Ok(text),
     }
@@ -538,7 +558,7 @@ async fn openai(
         "" => OPENAI_URL,
         url => url.trim_end_matches('/'),
     };
-    let body = json!({
+    let mut body = json!({
         "model": cfg.model.trim(),
         "stream": true,
         "messages": [
@@ -546,11 +566,21 @@ async fn openai(
             { "role": "user", "content": user },
         ],
     });
-    let mut request = http.to(base).post(format!("{base}/chat/completions"));
-    if let Some(key) = api_key {
-        request = request.bearer_auth(key);
+    let request = |body: &Value| {
+        let mut request = http.to(base).post(format!("{base}/chat/completions"));
+        if let Some(key) = api_key {
+            request = request.bearer_auth(key);
+        }
+        request.json(body)
+    };
+    match chat(request(&body)).await {
+        // OpenAI won't stream some models for an organization it hasn't verified.
+        Err(e) if e.starts_with("Ошибка API 400") && e.contains("stream") => {
+            body["stream"] = json!(false);
+            chat(request(&body)).await
+        }
+        result => result,
     }
-    chat(request.json(&body)).await
 }
 
 /// llama.cpp's server speaks the OpenAI chat API. Qwen3.5 thinks before it answers
@@ -589,13 +619,15 @@ async fn chat(request: reqwest::RequestBuilder) -> Result<String, String> {
             let mut finish = None;
             // Some servers end with a finish reason and no `[DONE]`.
             while let Some(event) = events.next().await? {
-                if event.get("error").is_some() {
+                if !event["error"].is_null() {
                     return Err(stream_error(&event));
                 }
                 let choice = &event["choices"][0];
                 text.push_str(choice["delta"]["content"].as_str().unwrap_or_default());
-                if let Some(reason) = choice["finish_reason"].as_str() {
+                // The whole answer is here, whatever the connection does next.
+                if let Some(reason) = choice["finish_reason"].as_str().filter(|reason| !reason.is_empty()) {
                     finish = Some(reason.to_string());
+                    break;
                 }
             }
             if finish.is_none() && !events.done {
@@ -604,10 +636,11 @@ async fn chat(request: reqwest::RequestBuilder) -> Result<String, String> {
             (text, finish)
         }
     };
-    if finish.as_deref() == Some("length") {
-        return Err(TRUNCATED.into());
+    match finish.as_deref() {
+        Some("length") => Err(TRUNCATED.into()),
+        Some("content_filter") => Err(REFUSED.into()),
+        _ => Ok(text),
     }
-    Ok(text)
 }
 
 /// The connection dropped before the answer was finished; half of it would
@@ -704,7 +737,9 @@ impl Events {
             match self.response.chunk().await.map_err(network_error)? {
                 // Line ends may be \r\n; JSON never holds a bare \r.
                 Some(bytes) => self.pending.extend(bytes.iter().filter(|&&b| b != b'\r')),
-                None => return Ok(None),
+                None if self.pending.is_empty() => return Ok(None),
+                // The last event may come without the blank line that ends it.
+                None => self.pending.extend_from_slice(b"\n\n"),
             }
         }
     }
@@ -819,35 +854,37 @@ mod tests {
     }
 
     fn mock_server_raw(response: String) -> (String, std::thread::JoinHandle<String>) {
-        use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut raw = Vec::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                let n = stream.read(&mut buf).unwrap();
-                raw.extend_from_slice(&buf[..n]);
-                let text = String::from_utf8_lossy(&raw).to_string();
-                if let Some(end) = text.find("\r\n\r\n") {
-                    let length = text[..end]
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if raw.len() >= end + 4 + length {
-                        break;
-                    }
+        let handle = std::thread::spawn(move || serve_one(&listener, &response));
+        (url, handle)
+    }
+
+    fn serve_one(listener: &std::net::TcpListener, response: &str) -> String {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            raw.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if raw.len() >= end + 4 + length {
+                    break;
                 }
             }
-            stream.write_all(response.as_bytes()).unwrap();
-            String::from_utf8(raw).unwrap()
-        });
-        (url, handle)
+        }
+        stream.write_all(response.as_bytes()).unwrap();
+        String::from_utf8(raw).unwrap()
     }
 
     #[test]
@@ -1058,9 +1095,14 @@ event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":3,
         assert!(ask_anthropic(url).unwrap_err().contains("отказалась"));
         let (url, _server) = sse_server(&anthropic_events("max_tokens", true));
         assert_eq!(ask_anthropic(url).unwrap_err(), TRUNCATED);
-        // The connection dropped before `message_stop`: half an answer.
-        let (url, _server) = sse_server(&anthropic_events("end_turn", false));
+        // The connection dropped before the stop reason: half an answer.
+        let (url, _server) = sse_server(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Half\"}}\n\n",
+        );
         assert_eq!(ask_anthropic(url).unwrap_err(), CUT_OFF);
+        // After the stop reason all the text is here, even without `message_stop`.
+        let (url, _server) = sse_server(&anthropic_events("end_turn", false));
+        assert_eq!(ask_anthropic(url).unwrap(), "Hello, мир!");
         let (url, _server) = sse_server(
             "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
         );
@@ -1086,6 +1128,42 @@ event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":3,
         assert_eq!(ask(chunk("Half", "null")).unwrap_err(), CUT_OFF);
         let error = "data: {\"error\":{\"message\":\"model crashed\"}}\n\n".to_string();
         assert!(ask(error).unwrap_err().contains("model crashed"));
+        assert_eq!(ask(chunk("Half", "\"content_filter\"")).unwrap_err(), REFUSED);
+        // An empty finish reason isn't one: this stream was cut off.
+        assert_eq!(ask(chunk("Half", "\"\"")).unwrap_err(), CUT_OFF);
+        // `"error": null`, and a last event without the blank line after it.
+        let last = "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}";
+        assert_eq!(ask(last.to_string()).unwrap(), "Hi");
+    }
+
+    #[test]
+    fn openai_asks_again_without_stream_when_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let answer = |status: &str, body: &str| {
+            format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let refusal = answer(
+            "400 Bad Request",
+            "{\"error\":{\"message\":\"Your organization must be verified to stream this model.\"}}",
+        );
+        let whole =
+            answer("200 OK", "{\"choices\":[{\"message\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}");
+        let server =
+            std::thread::spawn(move || (serve_one(&listener, &refusal), serve_one(&listener, &whole)));
+        let result =
+            tauri::async_runtime::block_on(complete(&Http::new(), &openai_settings(&url), None, "s", "t"));
+        assert_eq!(result.unwrap(), "Hi");
+        let (first, second) = server.join().unwrap();
+        let stream = |request: &str| {
+            let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            body["stream"].clone()
+        };
+        assert_eq!(stream(&first), true);
+        assert_eq!(stream(&second), false);
     }
 
     #[test]

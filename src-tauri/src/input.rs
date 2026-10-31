@@ -18,8 +18,8 @@ pub enum Chord {
 }
 
 pub use imp::{
-    accessibility_granted, elevated, foreground, front, mouse_down, restore_focus, terminal_focused, wayland,
-    Target, SUPPORTED,
+    accessibility_granted, elevated, foreground, front, is_foreground, mouse_down, restore_focus,
+    terminal_focused, wayland, Target, SUPPORTED,
 };
 
 /// What is in front, next to the window the text came from.
@@ -665,10 +665,10 @@ mod imp {
         let mut front = None;
         with_display(|d| {
             let Some(window) = active_window(d) else { return };
-            front = Some(if window == target {
-                Front::Target
-            } else if window_pid(d, window) == Some(std::process::id()) {
+            front = Some(if window_pid(d, window) == Some(std::process::id()) {
                 Front::Us
+            } else if window == target {
+                Front::Target
             } else {
                 Front::Other
             });

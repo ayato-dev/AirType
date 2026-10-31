@@ -489,11 +489,13 @@ mod imp {
         let has = |names: &[&str]| offered.iter().any(|offered| names.contains(&offered.as_str()));
         let mut clipboard = Clipboard::new().ok()?;
         if has(&["text/uri-list"]) {
-            if let Some(files) = read(clipboard.get().file_list())? {
+            // A list of smb:// or sftp:// addresses comes back with no files in it.
+            if let Some(files) = read(clipboard.get().file_list())?.filter(|files| !files.is_empty()) {
                 return Some(Saved::Files(files));
             }
         }
-        if has(&["image/png"]) {
+        // Only one format goes back, and a spreadsheet's cells also offer a picture of them.
+        if has(&["image/png"]) && !has(TEXT) {
             if let Some(image) = read(clipboard.get().image())? {
                 return Some(Saved::Image(image));
             }
@@ -549,7 +551,8 @@ mod imp {
         if !answered {
             return Some(Some(vec!["UTF8_STRING".into()]));
         }
-        let reply = conn.get_property(true, window, property, AtomEnum::ATOM, 0, 4096).ok()?.reply().ok()?;
+        // Some owners type the reply TARGETS instead of ATOM.
+        let reply = conn.get_property(true, window, property, AtomEnum::ANY, 0, 4096).ok()?.reply().ok()?;
         let cookies: Vec<_> =
             reply.value32().into_iter().flatten().filter_map(|atom| conn.get_atom_name(atom).ok()).collect();
         let names = cookies
