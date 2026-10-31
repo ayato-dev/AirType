@@ -185,8 +185,9 @@ pub fn progress() -> Option<Progress> {
 
 fn report(app: &AppHandle, progress: Progress) {
     let finished = matches!(progress.stage, "done" | "error" | "cancelled");
+    // Stored first: a window that asks right after the event gets the same answer.
+    *DOWNLOAD.lock().unwrap() = (!finished).then_some(progress.clone());
     let _ = app.emit_to("main", "local-progress", &progress);
-    *DOWNLOAD.lock().unwrap() = (!finished).then_some(progress);
 }
 
 /// Fetches the server (once) and the model in the background, telling the
@@ -316,6 +317,24 @@ fn fetch(
             }
             let mut response = request.send().await.map_err(network)?;
             let status = response.status();
+            // The file on the server is no longer the one this version knows: shorter
+            // than the part already here, or another size altogether. Downloading it
+            // again would only fail the hash check once more.
+            let total = match status {
+                reqwest::StatusCode::PARTIAL_CONTENT => response
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|range| range.to_str().ok())
+                    .and_then(|range| range.rsplit('/').next()?.parse::<u64>().ok()),
+                _ if status.is_success() => response.content_length(),
+                _ => None,
+            };
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+                || total.is_some_and(|total| total != size)
+            {
+                let _ = fs::remove_file(path);
+                return Err(CHANGED.into());
+            }
             if !status.is_success() {
                 return Err(format!("Сервер ответил {status}"));
             }
@@ -354,6 +373,8 @@ fn fetch(
     }
     Ok(())
 }
+
+const CHANGED: &str = "Файл на сервере поменялся, а эта версия Airtype ждёт прежний. Обнови Airtype";
 
 fn network(e: reqwest::Error) -> String {
     if e.is_connect() || e.is_timeout() {
@@ -515,7 +536,10 @@ pub fn shutdown() {
 
 /// Stops the server now, to start again on the next request. Unlike
 /// `shutdown`, the app goes on: a start in progress is let finish first.
+/// Called when the user switches the video card on or off: switched on, it
+/// gets another try even after it failed to load the model earlier in the run.
 pub fn release() {
+    GPU.store(HAS_GPU, Ordering::SeqCst);
     let mut slot = SERVER.lock().unwrap();
     while slot.starting {
         slot = READY.wait(slot).unwrap();
@@ -714,6 +738,14 @@ fn exit_reason(log: &Path, from: u64) -> Failed {
         Failed::Port
     } else {
         Failed::Exited
+    }
+}
+
+/// Stops a server an earlier run left behind, right as the app starts: it would
+/// hold its memory until the local model is next used.
+pub fn reap_left_behind(app: &AppHandle) {
+    if let Ok(root) = root(app) {
+        reap_orphan(&root);
     }
 }
 
