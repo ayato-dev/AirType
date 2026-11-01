@@ -164,7 +164,7 @@ Text goes only to the API you selected. After a paste the clipboard is restored 
 - On Windows the clipboard formats that hold GDI handles (metafiles, palettes) are not restored, and an image comes back as `CF_DIB`.
 - The accessibility API path hasn't been tested live across a wide range of apps. On macOS, Airtype asks Electron apps to build their accessibility tree for the length of one action and then turns it off.
 - Linux works in X11 sessions only, where Airtype catches hotkeys through X and sends `Ctrl+C` and `Ctrl+V` through XTest. Wayland lets apps do neither, so there Airtype works only in XWayland apps.
-- On Linux, field text is read through the clipboard only, and only text is restored to the clipboard after a paste.
+- On Linux, field text is read through the clipboard only. Afterwards the clipboard gets back copied files, a picture (as PNG), formatted text or plain text, the richest of them that was there; an app's own formats are lost.
 
 ## Development
 

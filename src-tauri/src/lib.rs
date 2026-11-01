@@ -51,9 +51,11 @@ pub fn run() {
             hud::init(handle);
             update::watch(handle);
 
-            // The keychain can wait on a macOS permission prompt; ask it off the main thread.
+            // Off the main thread: the keychain can wait on a macOS permission prompt,
+            // and a server left behind by a crash takes a moment to stop.
             let handle = handle.clone();
             std::thread::spawn(move || {
+                local::reap_left_behind(&handle);
                 let settings = handle.state::<AppState>().settings();
                 let needs_setup = settings.requires_key() && config::api_key(settings.provider).is_none();
                 if notice || needs_setup || !input::accessibility_granted(false) {
@@ -68,7 +70,7 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. } if window.label() != "main" => {
                 api.prevent_close();
                 if window.label() == "panel" {
-                    panel::close(window.app_handle(), true);
+                    panel::close_any(window.app_handle());
                 } else {
                     let _ = window.hide();
                 }

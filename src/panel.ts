@@ -413,9 +413,11 @@ function back() {
 }
 
 function write() {
+  if (!view) return;
+  const seq = view.seq;
   run++;
   view = null;
-  void invoke("panel_write", { text: answer });
+  void invoke("panel_write", { seq, text: answer });
 }
 
 async function copyAnswer() {
@@ -429,13 +431,19 @@ async function copyAnswer() {
   }
   copied = true;
   render();
-  window.setTimeout(() => close(true), 450);
+  // A panel opened in the meantime is not this one.
+  const seq = view?.seq;
+  window.setTimeout(() => {
+    if (view && view.seq === seq) close(true);
+  }, 450);
 }
 
 function close(restore: boolean) {
+  if (!view) return;
+  const seq = view.seq;
   run++;
   view = null;
-  void invoke("panel_close", { restore });
+  void invoke("panel_close", { seq, restore });
 }
 
 async function load() {

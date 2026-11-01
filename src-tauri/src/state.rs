@@ -14,7 +14,7 @@ pub struct AppState {
     read_only: bool,
     /// Why the settings file was not used, shown once in the settings window.
     pub notice: Mutex<Option<String>>,
-    pub http: reqwest::Client,
+    pub http: crate::llm::Http,
     /// An action is running; extra hotkey presses are ignored until it ends.
     pub busy: AtomicBool,
     /// Hotkeys are off while the settings window records a new combination.
@@ -35,7 +35,7 @@ impl AppState {
             settings_path,
             read_only: loaded.read_only,
             notice: Mutex::new(loaded.notice),
-            http: crate::llm::http_client(),
+            http: crate::llm::Http::new(),
             busy: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
             hotkeys: Mutex::new(HashMap::new()),

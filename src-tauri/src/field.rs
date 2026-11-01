@@ -49,6 +49,12 @@ pub fn focused() -> Focused {
     imp::focused()
 }
 
+/// In points: taller than this, a field holds several lines or a document, and
+/// the selection or the caret line is the place to stand under, not the field.
+const LARGE_FIELD: f64 = 120.0;
+/// In points: a field taller than this is a page; under it is off the screen.
+const PAGE: f64 = 400.0;
+
 /// Where the focused text is on screen: the selection, else the caret in a large
 /// field, else the field. `None` when the app doesn't say.
 pub fn anchor() -> Option<Anchor> {
@@ -75,7 +81,7 @@ impl Snapshot {
 mod imp {
     use super::{Focused, Replaced, Snapshot};
     use crate::popup::{Anchor, Kind, Rect};
-    use core_foundation::base::{CFType, CFTypeRef, TCFType};
+    use core_foundation::base::{CFType, CFTypeID, CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::string::{CFString, CFStringRef};
     use std::{ffi::c_void, ptr};
@@ -119,6 +125,27 @@ mod imp {
         size: CgSize,
     }
 
+    /// A type an AXValue unpacks into, with the kind that holds exactly it.
+    trait AxValue: Default {
+        const KIND: u32;
+    }
+
+    impl AxValue for CfRange {
+        const KIND: u32 = AX_VALUE_CF_RANGE;
+    }
+
+    impl AxValue for CgPoint {
+        const KIND: u32 = AX_VALUE_CG_POINT;
+    }
+
+    impl AxValue for CgSize {
+        const KIND: u32 = AX_VALUE_CG_SIZE;
+    }
+
+    impl AxValue for CgRect {
+        const KIND: u32 = AX_VALUE_CG_RECT;
+    }
+
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXUIElementCreateSystemWide() -> CFTypeRef;
@@ -146,6 +173,7 @@ mod imp {
         ) -> AxError;
         fn AXValueCreate(kind: u32, value: *const c_void) -> CFTypeRef;
         fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> u8;
+        fn AXValueGetTypeID() -> CFTypeID;
     }
 
     pub struct Field {
@@ -191,20 +219,26 @@ mod imp {
         get(element, name)?.downcast::<CFString>().map(|s| s.to_string())
     }
 
-    /// Unpacks an AXValue holding a range, point, size or rect.
-    fn unpack<T: Default>(value: &CFType, kind: u32) -> Option<T> {
+    /// Unpacks an AXValue holding a range, point, size or rect. An app may answer
+    /// with something else than an AXValue, or one of another kind: then None,
+    /// and nothing is written into `T`.
+    fn unpack<T: AxValue>(value: &CFType) -> Option<T> {
+        if value.type_of() != unsafe { AXValueGetTypeID() } {
+            return None;
+        }
         let mut out = T::default();
-        let ok = unsafe { AXValueGetValue(value.as_CFTypeRef(), kind, &mut out as *mut T as *mut c_void) };
+        // False for a value of another kind; the kind fixes the size written.
+        let ok = unsafe { AXValueGetValue(value.as_CFTypeRef(), T::KIND, (&mut out as *mut T).cast()) };
         (ok != 0).then_some(out)
     }
 
     fn range(element: &CFType, name: &'static str) -> Option<CfRange> {
-        unpack(&get(element, name)?, AX_VALUE_CF_RANGE)
+        unpack(&get(element, name)?)
     }
 
     fn frame(element: &CFType) -> Option<Rect> {
-        let origin: CgPoint = unpack(&get(element, "AXPosition")?, AX_VALUE_CG_POINT)?;
-        let size: CgSize = unpack(&get(element, "AXSize")?, AX_VALUE_CG_SIZE)?;
+        let origin: CgPoint = unpack(&get(element, "AXPosition")?)?;
+        let size: CgSize = unpack(&get(element, "AXSize")?)?;
         Some(Rect { x: origin.x, y: origin.y, w: size.width, h: size.height })
     }
 
@@ -229,7 +263,7 @@ mod imp {
             return None;
         }
         let value = unsafe { CFType::wrap_under_create_rule(value) };
-        let rect: CgRect = unpack(&value, AX_VALUE_CG_RECT)?;
+        let rect: CgRect = unpack(&value)?;
         (rect.size.height > 0.0).then_some(Rect {
             x: rect.origin.x,
             y: rect.origin.y,
@@ -246,7 +280,7 @@ mod imp {
         let field = frame(&element);
         // A one- or few-line field is the place to stand under; in a large one the
         // selection or the caret line is.
-        let large = field.map_or(true, |f| f.h > 120.0);
+        let large = field.map_or(true, |f| f.h > super::LARGE_FIELD);
         if let Some(selection) = range(&element, "AXSelectedTextRange") {
             if selection.length > 0 {
                 if let Some(rect) = bounds_for(&element, selection) {
@@ -259,7 +293,7 @@ mod imp {
                 }
             }
         }
-        field.filter(|f| f.h <= 400.0).map(|rect| Anchor { rect, kind: Kind::Field })
+        field.filter(|f| f.h <= super::PAGE).map(|rect| Anchor { rect, kind: Kind::Field })
     }
 
     fn in_web_page(element: &CFType) -> bool {
@@ -439,6 +473,8 @@ mod imp {
         UIA_TextPatternId, UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeControlTypeId,
         UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_CONTROLTYPE_ID,
     };
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     /// Milliseconds to wait for an app that has stopped answering.
     const TIMEOUT_MS: u32 = 400;
@@ -615,12 +651,16 @@ mod imp {
             h: (r.bottom - r.top) as f64,
         });
         // A one- or few-line field is the place to stand under; in a large one the
-        // selection or the caret line is.
-        let large = field.map_or(true, |f| f.h > 180.0);
+        // selection or the caret line is. The rectangles are physical pixels.
+        let dpi = unsafe { GetDpiForWindow(GetForegroundWindow()) };
+        let scale = if dpi == 0 { 1.0 } else { f64::from(dpi) / 96.0 };
+        let large = field.map_or(true, |f| f.h > super::LARGE_FIELD * scale);
         if let Some(rect) = text_bounds(&element, large) {
             return Some(Anchor { rect, kind: Kind::Text });
         }
-        field.filter(|f| f.w > 0.0 && f.h <= 600.0).map(|rect| Anchor { rect, kind: Kind::Field })
+        field
+            .filter(|f| f.w > 0.0 && f.h <= super::PAGE * scale)
+            .map(|rect| Anchor { rect, kind: Kind::Field })
     }
 
     /// The selected text on screen; with `caret`, the character at the caret when nothing is selected.
